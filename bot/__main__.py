@@ -7,10 +7,29 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
+from bot.catalog import CLEANUP_INTERVAL, REJECTED_ORDER_TTL
 from bot.config import Settings, get_settings
 from bot.database.engine import create_engine, create_session_pool, init_db
 from bot.handlers import get_routers
 from bot.middlewares.db import DbSessionMiddleware
+from bot.services.orders import delete_old_rejected_orders
+
+
+logger = logging.getLogger(__name__)
+
+
+async def cleanup_rejected_orders(session_pool: async_sessionmaker[AsyncSession]) -> None:
+    """Фоновая задача: раз в CLEANUP_INTERVAL удаляет давно отклонённые заказы."""
+    while True:
+        try:
+            async with session_pool() as session:
+                deleted = await delete_old_rejected_orders(session, REJECTED_ORDER_TTL)
+            if deleted:
+                logger.info("Удалено отклонённых заказов: %s", deleted)
+        except Exception:
+            # Ошибка очистки не должна останавливать ни бота, ни саму задачу — попробуем позже.
+            logger.exception("Не удалось удалить отклонённые заказы")
+        await asyncio.sleep(CLEANUP_INTERVAL.total_seconds())
 
 
 def create_dispatcher(
@@ -40,11 +59,14 @@ async def main() -> None:
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
-    dp = create_dispatcher(settings, create_session_pool(engine))
+    session_pool = create_session_pool(engine)
+    dp = create_dispatcher(settings, session_pool)
+    cleanup_task = asyncio.create_task(cleanup_rejected_orders(session_pool))
 
     try:
         await dp.start_polling(bot)
     finally:
+        cleanup_task.cancel()
         await engine.dispose()
 
 

@@ -2,7 +2,7 @@ import re
 from pathlib import Path
 from typing import Any
 
-from aiogram import F, Router, html
+from aiogram import Bot, F, Router, html
 from aiogram.filters import Command, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message, ReplyKeyboardRemove
@@ -17,6 +17,7 @@ from bot.catalog import (
     MATERIALS,
     PRINT_EXTENSIONS,
 )
+from bot.config import Settings
 from bot.database.models import OrderType
 from bot.keyboards.menu import DESIGN_BUTTON, PRINT_BUTTON, main_menu_kb
 from bot.keyboards.orders import (
@@ -25,6 +26,7 @@ from bot.keyboards.orders import (
     CONFIRM_CALLBACK,
     CONTACT_BUTTON,
     DONE_BUTTON,
+    EDIT_CONTACTS_CALLBACK,
     ORDER_TYPE_TITLES,
     SKIP_BUTTON,
     PrintOptionCallback,
@@ -37,7 +39,8 @@ from bot.keyboards.orders import (
     material_kb,
     references_kb,
 )
-from bot.services.orders import create_order
+from bot.services.notifications import notify_admin_new_order
+from bot.services.orders import create_order, get_last_contacts
 from bot.states import OrderForm
 
 router = Router(name="orders")
@@ -113,6 +116,32 @@ async def ask_name(message: Message, state: FSMContext) -> None:
     )
 
 
+async def show_summary(message: Message, state: FSMContext) -> None:
+    await state.set_state(OrderForm.confirming)
+    data = await state.get_data()
+    await message.answer(
+        f"Проверьте заказ:\n\n{format_order(data)}", reply_markup=confirm_kb()
+    )
+
+
+async def ask_contacts(
+    message: Message, state: FSMContext, session: AsyncSession, user_id: int
+) -> None:
+    """Последний шаг перед сводкой: постоянному клиенту подставляем ФИО и телефон
+    из прошлого заказа, новому — спрашиваем."""
+    contacts = await get_last_contacts(session, user_id)
+    if contacts is None:
+        await ask_name(message, state)
+        return
+
+    customer_name, phone = contacts
+    await state.update_data(customer_name=customer_name, phone=phone)
+    await message.answer(
+        "Использую ваши данные из прошлого заказа.", reply_markup=ReplyKeyboardRemove()
+    )
+    await show_summary(message, state)
+
+
 @router.message(Command("cancel"))
 @router.message(F.text == CANCEL_BUTTON)
 async def cancel_order(message: Message, state: FSMContext) -> None:
@@ -146,7 +175,8 @@ async def start_design_order(message: Message, state: FSMContext) -> None:
     await state.update_data(order_type=OrderType.DESIGN.value)
     await state.set_state(OrderForm.waiting_description)
     await message.answer(
-        "Опишите задачу: что нужно сделать, примерные размеры, для чего деталь.",
+        "Опишите задачу: что нужно сделать, примерные размеры, для чего деталь "
+        "и желаемые сроки.",
         reply_markup=cancel_kb(),
     )
 
@@ -235,7 +265,10 @@ async def choose_infill(
     OrderForm.choosing_color, PrintOptionCallback.filter(F.field == "color")
 )
 async def choose_color(
-    callback: CallbackQuery, callback_data: PrintOptionCallback, state: FSMContext
+    callback: CallbackQuery,
+    callback_data: PrintOptionCallback,
+    state: FSMContext,
+    session: AsyncSession,
 ) -> None:
     if callback_data.value not in COLORS:
         await callback.answer("Такого варианта нет.", show_alert=True)
@@ -243,7 +276,8 @@ async def choose_color(
     await state.update_data(color=callback_data.value)
     # Убираем кнопки: параметры выбраны, дальше — контактные данные.
     await show_print_step(callback, state, "Параметры печати выбраны.")
-    await ask_name(callback.message, state)
+    # callback.message отправлено ботом, поэтому id клиента берём из callback.from_user.
+    await ask_contacts(callback.message, state, session, callback.from_user.id)
     await callback.answer()
 
 
@@ -280,7 +314,7 @@ async def receive_description(message: Message, state: FSMContext) -> None:
     await state.update_data(description=description, attachments=[])
     await state.set_state(OrderForm.waiting_references)
     await message.answer(
-        "Пришлите фото, эскиз, чертёж или фото сломанного оригинала — можно несколько "
+        "Пришлите фото, эскиз или чертёж — можно несколько "
         f"(до {MAX_REFERENCES}). Когда закончите, нажмите «{DONE_BUTTON}».\n"
         f"Если исходников нет — «{SKIP_BUTTON}».",
         reply_markup=references_kb(),
@@ -331,9 +365,11 @@ async def receive_reference(message: Message, state: FSMContext) -> None:
 
 
 @router.message(OrderForm.waiting_references, F.text.in_({DONE_BUTTON, SKIP_BUTTON}))
-async def references_done(message: Message, state: FSMContext) -> None:
+async def references_done(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
     # «Готово» без файлов работает так же, как «Пропустить».
-    await ask_name(message, state)
+    await ask_contacts(message, state, session, message.from_user.id)
 
 
 @router.message(OrderForm.waiting_references)
@@ -382,13 +418,9 @@ async def receive_contact(message: Message, state: FSMContext) -> None:
     if not phone.startswith("+"):
         phone = f"+{phone}"
     await state.update_data(phone=phone)
-    await state.set_state(OrderForm.confirming)
 
     await message.answer("Номер получен.", reply_markup=ReplyKeyboardRemove())
-    data = await state.get_data()
-    await message.answer(
-        f"Проверьте заказ:\n\n{format_order(data)}", reply_markup=confirm_kb()
-    )
+    await show_summary(message, state)
 
 
 @router.message(OrderForm.waiting_contact)
@@ -398,9 +430,22 @@ async def receive_contact_invalid(message: Message) -> None:
     )
 
 
+@router.callback_query(OrderForm.confirming, F.data == EDIT_CONTACTS_CALLBACK)
+async def edit_contacts(callback: CallbackQuery, state: FSMContext) -> None:
+    # Убираем кнопки со старой сводки, чтобы её нельзя было подтвердить со старыми данными.
+    await callback.message.edit_reply_markup(reply_markup=None)
+    # Дальше обычный путь: ФИО → кнопка контакта (с проверкой, что контакт свой) → сводка.
+    await ask_name(callback.message, state)
+    await callback.answer()
+
+
 @router.callback_query(OrderForm.confirming, F.data == CONFIRM_CALLBACK)
 async def confirm_order(
-    callback: CallbackQuery, state: FSMContext, session: AsyncSession
+    callback: CallbackQuery,
+    state: FSMContext,
+    session: AsyncSession,
+    bot: Bot,
+    settings: Settings,
 ) -> None:
     data = await state.get_data()
     # Очищаем состояние до записи в БД, чтобы повторное нажатие не создало дубль.
@@ -435,9 +480,11 @@ async def confirm_order(
         final_text = DESIGN_ACCEPTED_TEXT
     await callback.message.answer(final_text, reply_markup=main_menu_kb())
     await callback.answer()
+    # Мастера уведомляем после ответа клиенту: сбой отправки мастеру его не затронет.
+    await notify_admin_new_order(bot, settings, order)
 
 
 @router.callback_query(PrintOptionCallback.filter())
-@router.callback_query(F.data == CONFIRM_CALLBACK)
+@router.callback_query(F.data.in_({CONFIRM_CALLBACK, EDIT_CONTACTS_CALLBACK}))
 async def stale_button(callback: CallbackQuery) -> None:
     await callback.answer("Эта кнопка уже неактуальна.")

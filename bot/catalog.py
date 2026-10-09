@@ -1,5 +1,23 @@
 """Справочники и цены. Меняйте значения здесь — прайс и кнопки в боте обновятся сами."""
+from datetime import timedelta
 from decimal import Decimal
+from zoneinfo import ZoneInfo
+
+# Время в БД хранится в UTC; клиенту показываем в этом часовом поясе.
+LOCAL_TIMEZONE = ZoneInfo("Europe/Minsk")
+
+# Статус заказа в БД → как его видит клиент. Статусы, кроме "new", выставляет мастер.
+ORDER_STATUS_TITLES = {
+    "new": "🆕 Принят, ждёт оценки мастера",
+    "awaiting_payment": "💳 Ожидает оплаты",
+    "printing": "🖨 Печатается",
+    "ready": "✅ Готов к выдаче",
+    "rejected": "❌ Отклонён",
+}
+
+# Сколько хранить отклонённые заказы, и как часто бот проверяет, не пора ли их удалить.
+REJECTED_ORDER_TTL = timedelta(days=1)
+CLEANUP_INTERVAL = timedelta(hours=1)
 
 MAX_PRINT_SIZE_MM = (250, 250, 250)
 DESIGN_PRICE_FROM = Decimal("18")

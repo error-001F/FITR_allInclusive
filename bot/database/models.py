@@ -16,6 +16,14 @@ class OrderType(StrEnum):
     DESIGN = "design"  # разработка модели с нуля
 
 
+class OrderStatus(StrEnum):
+    NEW = "new"  # оформлен клиентом, ждёт оценки мастера
+    AWAITING_PAYMENT = "awaiting_payment"  # мастер выставил счёт
+    PRINTING = "printing"  # оплачен, в работе
+    READY = "ready"  # готов к выдаче
+    REJECTED = "rejected"  # отклонён мастером
+
+
 class Order(Base):
     __tablename__ = "orders"
 
@@ -36,9 +44,11 @@ class Order(Base):
     attachments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
     customer_name: Mapped[str] = mapped_column(String(64))
     phone: Mapped[str] = mapped_column(String(32))
-    status: Mapped[str] = mapped_column(String(16), default="new")
+    status: Mapped[str] = mapped_column(String(16), default=OrderStatus.NEW)
     # Сумма счёта, BYN — выставляет мастер.
     amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+    # Когда мастер отклонил заказ (UTC). По нему удаляем старые отклонённые заказы.
+    rejected_at: Mapped[datetime | None] = mapped_column(DateTime)

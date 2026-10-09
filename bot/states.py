@@ -15,3 +15,10 @@ class OrderForm(StatesGroup):
     waiting_name = State()
     waiting_contact = State()
     confirming = State()
+
+
+class AdminForm(StatesGroup):
+    # Мастер вводит текст для конкретного заказа; order_id и id карточки лежат в данных FSM.
+    waiting_amount = State()
+    waiting_reject_reason = State()
+    waiting_question = State()

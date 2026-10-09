@@ -15,6 +15,7 @@ DONE_BUTTON = "Готово"
 SKIP_BUTTON = "Пропустить"
 CONFIRM_CALLBACK = "order_confirm"
 CANCEL_CALLBACK = "order_cancel"
+EDIT_CONTACTS_CALLBACK = "order_edit_contacts"
 
 ORDER_TYPE_TITLES = {
     OrderType.PRINT: "Печать по моей 3D-модели",
@@ -113,6 +114,11 @@ def confirm_kb() -> InlineKeyboardMarkup:
             [
                 InlineKeyboardButton(text="Подтвердить", callback_data=CONFIRM_CALLBACK),
                 InlineKeyboardButton(text="Отменить", callback_data=CANCEL_CALLBACK),
-            ]
+            ],
+            [
+                InlineKeyboardButton(
+                    text="Изменить ФИО и телефон", callback_data=EDIT_CONTACTS_CALLBACK
+                )
+            ],
         ]
     )

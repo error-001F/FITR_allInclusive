@@ -4,9 +4,11 @@ from aiogram import F, Router, html
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import Message
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import price_info_text
 from bot.config import Settings
+from bot.database.models import Order
 from bot.keyboards.menu import (
     CONTACT_MASTER_BUTTON,
     DESIGN_BUTTON,
@@ -16,9 +18,15 @@ from bot.keyboards.menu import (
     main_menu_kb,
     master_link_kb,
 )
+from bot.services.formatting import order_details_lines, order_header
+from bot.services.orders import list_user_orders
 
 router = Router(name="common")
 logger = logging.getLogger(__name__)
+
+# 10 заказов по ~250 символов укладываются в лимит Telegram (4096 символов на сообщение).
+MY_ORDERS_LIMIT = 10
+DESCRIPTION_PREVIEW_LENGTH = 60
 
 
 @router.message(CommandStart())
@@ -63,7 +71,20 @@ async def contact_master(message: Message, settings: Settings) -> None:
     )
 
 
+def format_order_line(order: Order) -> str:
+    lines = [
+        order_header(order),
+        *order_details_lines(order, description_limit=DESCRIPTION_PREVIEW_LENGTH),
+    ]
+    return "\n".join(lines)
+
+
 @router.message(F.text == MY_ORDERS_BUTTON)
-async def my_orders(message: Message) -> None:
-    # Список заказов появится на этапе 4.
-    await message.answer("Раздел «Мои заказы» скоро заработает.")
+async def my_orders(message: Message, session: AsyncSession) -> None:
+    orders = await list_user_orders(session, message.from_user.id, limit=MY_ORDERS_LIMIT)
+    if not orders:
+        await message.answer("У вас пока нет заказов. Оформить — кнопками меню ниже.")
+        return
+
+    blocks = "\n\n".join(format_order_line(order) for order in orders)
+    await message.answer(f"Ваши последние заказы:\n\n{blocks}")
