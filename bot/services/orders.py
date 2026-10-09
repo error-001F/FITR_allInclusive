@@ -101,6 +101,36 @@ async def update_order_status(
     return order
 
 
+async def update_print_params(
+    session: AsyncSession,
+    order_id: int,
+    allowed_from: set[OrderStatus],
+    *,
+    material: str,
+    layer_height: str,
+    infill: int,
+    color: str,
+    file_id: str | None = None,
+    file_name: str | None = None,
+) -> Order | None:
+    """Мастер задаёт параметры печати. Файл меняется, только если прислан новый.
+
+    None — заказа нет или его статус не позволяет менять параметры.
+    """
+    order = await session.get(Order, order_id)
+    if order is None or order.status not in allowed_from:
+        return None
+    order.material = material
+    order.layer_height = layer_height
+    order.infill = infill
+    order.color = color
+    if file_id is not None:
+        order.file_id = file_id
+        order.file_name = file_name
+    await session.commit()
+    return order
+
+
 async def delete_old_rejected_orders(session: AsyncSession, older_than: timedelta) -> int:
     """Удаляет заказы, отклонённые раньше чем older_than назад, вместе с их карточками
     у мастеров. Возвращает количество удалённых заказов."""

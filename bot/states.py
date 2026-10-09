@@ -22,3 +22,9 @@ class AdminForm(StatesGroup):
     waiting_amount = State()
     waiting_reject_reason = State()
     waiting_question = State()
+    # Мастер задаёт параметры печати (этап 5б); выбранное копится в данных FSM.
+    choosing_material = State()
+    choosing_layer = State()
+    choosing_infill = State()
+    choosing_color = State()
+    waiting_model_file = State()

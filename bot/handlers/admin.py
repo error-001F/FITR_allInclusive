@@ -1,20 +1,35 @@
 """Действия мастера с заказом: счёт, отказ, уточнение, смена статусов."""
 import logging
 from decimal import Decimal, InvalidOperation
+from pathlib import Path
 
 from aiogram import Bot, F, Router, html
-from aiogram.filters import BaseFilter, Command, CommandObject
+from aiogram.filters import BaseFilter, Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.catalog import PICKUP_ADDRESS
+from bot.catalog import (
+    COLORS,
+    INFILL_SURCHARGES,
+    LAYER_PRICES,
+    MATERIALS,
+    PICKUP_ADDRESS,
+    PRINT_EXTENSIONS,
+)
 from bot.config import Settings
 from bot.database.models import Order, OrderStatus
-from bot.keyboards.admin import AdminOrderCallback
-from bot.keyboards.menu import CONTACT_MASTER_BUTTON
+from bot.keyboards.admin import (
+    ADMIN_CANCEL_CALLBACK,
+    ADMIN_SKIP_FILE_CALLBACK,
+    AdminOrderCallback,
+    AdminPrintCallback,
+    model_file_kb,
+)
+from bot.keyboards.menu import CONTACT_MASTER_BUTTON, MY_ORDERS_BUTTON
+from bot.keyboards.orders import color_kb, infill_kb, layer_kb, material_kb
 from bot.services.notifications import notify_client, refresh_admin_cards, send_admin_card
-from bot.services.orders import get_order, update_order_status
+from bot.services.orders import get_order, update_order_status, update_print_params
 from bot.states import AdminForm
 
 logger = logging.getLogger(__name__)
@@ -39,6 +54,8 @@ INVOICE_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT}
 PAID_FROM = {OrderStatus.AWAITING_PAYMENT}
 READY_FROM = {OrderStatus.PRINTING}
 REJECT_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT, OrderStatus.PRINTING}
+# Параметры печати можно менять только до оплаты.
+PARAMS_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT}
 
 CLIENT_UNREACHABLE = (
     "⚠️ Клиент не получил сообщение (возможно, заблокировал бота). "
@@ -309,6 +326,226 @@ async def send_question(
 @router.message(AdminForm.waiting_question)
 async def admin_text_expected(message: Message) -> None:
     await message.answer("Нужен текст сообщением. Отмена — /cancel.")
+
+
+# --- Параметры печати (этап 5б): мастер дополняет или корректирует заказ ---
+
+
+def params_progress(order_id: int, data: dict) -> str:
+    """Заголовок с уже выбранными параметрами — показывается на каждом шаге."""
+    lines = [html.bold(f"Параметры печати для заказа №{order_id}")]
+    if "material" in data:
+        lines.append(f"Материал: {data['material']}")
+    if "layer_height" in data:
+        lines.append(f"Толщина слоя: {data['layer_height']} мм")
+    if "infill" in data:
+        lines.append(f"Заполнение: {data['infill']}%")
+    if "color" in data:
+        lines.append(f"Цвет: {data['color']}")
+    return "\n".join(lines)
+
+
+async def params_next_step(
+    callback: CallbackQuery, state: FSMContext, prompt: str, reply_markup
+) -> None:
+    """Редактирует то же сообщение: выбранное на данный момент + следующий вопрос."""
+    data = await state.get_data()
+    await callback.message.edit_text(
+        f"{params_progress(data['order_id'], data)}\n\n{prompt}", reply_markup=reply_markup
+    )
+    await callback.answer()
+
+
+async def save_params(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    bot: Bot,
+    file_id: str | None = None,
+    file_name: str | None = None,
+) -> None:
+    """Последний шаг: всё выбранное сохраняется одним действием."""
+    data = await state.get_data()
+    await state.clear()
+    order = await update_print_params(
+        session,
+        data["order_id"],
+        PARAMS_FROM,
+        material=data["material"],
+        layer_height=data["layer_height"],
+        infill=data["infill"],
+        color=data["color"],
+        file_id=file_id,
+        file_name=file_name,
+    )
+    if order is None:
+        await message.answer("Статус заказа уже изменился — параметры не сохранены.")
+        return
+
+    await refresh_admin_cards(
+        bot, session, order, (data["card_chat_id"], data["card_message_id"])
+    )
+    params = f"{order.material}, {order.layer_height} мм, заполнение {order.infill}%, {order.color}"
+    new_file = f"\nФайл модели: {html.quote(file_name)}" if file_id and file_name else ""
+    delivered = await notify_client(
+        bot,
+        order,
+        f"Мастер дополнил заказ №{order.id}.\nПечать: {params}{new_file}\n\n"
+        f"Подробности — в разделе «{MY_ORDERS_BUTTON}».",
+    )
+    text = f"Параметры заказа №{order.id} сохранены."
+    await message.answer(text if delivered else f"{text}\n\n{CLIENT_UNREACHABLE}")
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "params"))
+async def params_start(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    order = await get_order(session, callback_data.order_id)
+    if order is None or order.status not in PARAMS_FROM:
+        await answer_stale(callback, session, order)
+        return
+    # clear(): убираем данные прошлых действий мастера (ввод суммы и т.п.).
+    await state.clear()
+    await state.set_state(AdminForm.choosing_material)
+    await state.update_data(
+        order_id=order.id,
+        card_chat_id=callback.message.chat.id,
+        card_message_id=callback.message.message_id,
+        has_file=order.file_id is not None,
+    )
+    await callback.message.answer(
+        f"{params_progress(order.id, {})}\n\nВыберите материал:",
+        reply_markup=material_kb(AdminPrintCallback, ADMIN_CANCEL_CALLBACK),
+    )
+    await callback.answer()
+
+
+@router.callback_query(
+    AdminForm.choosing_material, AdminPrintCallback.filter(F.field == "material")
+)
+async def params_material(
+    callback: CallbackQuery, callback_data: AdminPrintCallback, state: FSMContext
+) -> None:
+    # Значение из кнопки проверяем по каталогу: callback_data можно подделать.
+    if callback_data.value not in MATERIALS:
+        await callback.answer("Такого варианта нет.", show_alert=True)
+        return
+    await state.update_data(material=callback_data.value)
+    await state.set_state(AdminForm.choosing_layer)
+    await params_next_step(
+        callback, state, "Выберите толщину слоя:",
+        layer_kb(AdminPrintCallback, ADMIN_CANCEL_CALLBACK),
+    )
+
+
+@router.callback_query(AdminForm.choosing_layer, AdminPrintCallback.filter(F.field == "layer"))
+async def params_layer(
+    callback: CallbackQuery, callback_data: AdminPrintCallback, state: FSMContext
+) -> None:
+    if callback_data.value not in LAYER_PRICES:
+        await callback.answer("Такого варианта нет.", show_alert=True)
+        return
+    await state.update_data(layer_height=callback_data.value)
+    await state.set_state(AdminForm.choosing_infill)
+    await params_next_step(
+        callback, state, "Выберите плотность заполнения:",
+        infill_kb(AdminPrintCallback, ADMIN_CANCEL_CALLBACK),
+    )
+
+
+@router.callback_query(
+    AdminForm.choosing_infill, AdminPrintCallback.filter(F.field == "infill")
+)
+async def params_infill(
+    callback: CallbackQuery, callback_data: AdminPrintCallback, state: FSMContext
+) -> None:
+    value = callback_data.value
+    if not value.isdigit() or int(value) not in INFILL_SURCHARGES:
+        await callback.answer("Такого варианта нет.", show_alert=True)
+        return
+    await state.update_data(infill=int(value))
+    await state.set_state(AdminForm.choosing_color)
+    await params_next_step(
+        callback, state, "Выберите цвет:", color_kb(AdminPrintCallback, ADMIN_CANCEL_CALLBACK)
+    )
+
+
+@router.callback_query(AdminForm.choosing_color, AdminPrintCallback.filter(F.field == "color"))
+async def params_color(
+    callback: CallbackQuery, callback_data: AdminPrintCallback, state: FSMContext
+) -> None:
+    if callback_data.value not in COLORS:
+        await callback.answer("Такого варианта нет.", show_alert=True)
+        return
+    await state.update_data(color=callback_data.value)
+    await state.set_state(AdminForm.waiting_model_file)
+    has_file = (await state.get_data())["has_file"]
+    extensions = ", ".join(PRINT_EXTENSIONS)
+    alternative = "или оставьте текущий файл" if has_file else "или пропустите, если файла пока нет"
+    await params_next_step(
+        callback,
+        state,
+        f"Пришлите файл модели ({extensions}) документом — {alternative}.",
+        model_file_kb(has_file),
+    )
+
+
+@router.message(AdminForm.waiting_model_file, F.document)
+async def params_file(
+    message: Message, state: FSMContext, session: AsyncSession, bot: Bot
+) -> None:
+    file_name = message.document.file_name or ""
+    if Path(file_name).suffix.lower() not in PRINT_EXTENSIONS:
+        await message.answer(f"Нужен файл модели с расширением {', '.join(PRINT_EXTENSIONS)}.")
+        return
+    await save_params(message, state, session, bot, message.document.file_id, file_name)
+
+
+@router.callback_query(AdminForm.waiting_model_file, F.data == ADMIN_SKIP_FILE_CALLBACK)
+async def params_skip_file(
+    callback: CallbackQuery, state: FSMContext, session: AsyncSession, bot: Bot
+) -> None:
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await save_params(callback.message, state, session, bot)
+    await callback.answer()
+
+
+@router.message(AdminForm.waiting_model_file)
+async def params_file_expected(message: Message) -> None:
+    await message.answer(
+        "Пришлите файл модели документом или нажмите кнопку под сообщением выше. "
+        "Отмена — /cancel."
+    )
+
+
+@router.message(
+    StateFilter(
+        AdminForm.choosing_material,
+        AdminForm.choosing_layer,
+        AdminForm.choosing_infill,
+        AdminForm.choosing_color,
+    )
+)
+async def params_use_buttons(message: Message) -> None:
+    await message.answer("Выберите вариант кнопкой под сообщением выше. Отмена — /cancel.")
+
+
+@router.callback_query(F.data == ADMIN_CANCEL_CALLBACK)
+async def params_cancel(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.clear()
+    await callback.message.edit_text("Изменение параметров отменено.")
+    await callback.answer()
+
+
+@router.callback_query(AdminPrintCallback.filter())
+@router.callback_query(F.data == ADMIN_SKIP_FILE_CALLBACK)
+async def params_stale(callback: CallbackQuery) -> None:
+    # Кнопка параметров нажата не на своём шаге (или после сохранения/отмены).
+    await callback.answer("Эта кнопка уже неактуальна.")
 
 
 # --- Команды ---
