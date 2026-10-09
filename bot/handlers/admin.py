@@ -3,7 +3,6 @@ import logging
 from decimal import Decimal, InvalidOperation
 
 from aiogram import Bot, F, Router, html
-from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import BaseFilter, Command, CommandObject
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
@@ -12,10 +11,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from bot.catalog import PICKUP_ADDRESS
 from bot.config import Settings
 from bot.database.models import Order, OrderStatus
-from bot.keyboards.admin import AdminOrderCallback, admin_order_kb
+from bot.keyboards.admin import AdminOrderCallback
 from bot.keyboards.menu import CONTACT_MASTER_BUTTON
-from bot.services.formatting import admin_card_text
-from bot.services.notifications import notify_client, send_admin_card
+from bot.services.notifications import notify_client, refresh_admin_cards, send_admin_card
 from bot.services.orders import get_order, update_order_status
 from bot.states import AdminForm
 
@@ -23,14 +21,10 @@ logger = logging.getLogger(__name__)
 
 
 class IsAdmin(BaseFilter):
-    """Пропускает только мастера. Если ADMIN_ID не задан в .env — не пропускает никого."""
+    """Пропускает только мастеров из ADMIN_IDS. Если список пуст — не пропускает никого."""
 
     async def __call__(self, event: Message | CallbackQuery, settings: Settings) -> bool:
-        return (
-            settings.admin_id is not None
-            and event.from_user is not None
-            and event.from_user.id == settings.admin_id
-        )
+        return event.from_user is not None and event.from_user.id in settings.admin_ids
 
 
 router = Router(name="admin")
@@ -65,26 +59,19 @@ def parse_amount(text: str) -> Decimal | None:
     return amount.quantize(Decimal("0.01"))
 
 
-async def refresh_card(bot: Bot, chat_id: int, message_id: int, order: Order) -> None:
-    """Перерисовывает карточку: новый статус и кнопки."""
-    try:
-        await bot.edit_message_text(
-            text=admin_card_text(order),
-            chat_id=chat_id,
-            message_id=message_id,
-            reply_markup=admin_order_kb(order),
-        )
-    except TelegramBadRequest as error:
-        # Например, «message is not modified» или карточку удалили — не критично.
-        logger.info("Карточка заказа №%s не обновлена: %s", order.id, error)
+def pressed_card(callback: CallbackQuery) -> tuple[int, int]:
+    return callback.message.chat.id, callback.message.message_id
 
 
-async def answer_stale(callback: CallbackQuery, order: Order | None) -> None:
+async def answer_stale(
+    callback: CallbackQuery, session: AsyncSession, order: Order | None
+) -> None:
     if order is None:
         await callback.answer("Заказ не найден.", show_alert=True)
         return
+    # Обычно это значит, что заказ уже изменил другой мастер.
     await callback.answer("Статус заказа уже изменился — карточка обновлена.", show_alert=True)
-    await refresh_card(callback.bot, callback.message.chat.id, callback.message.message_id, order)
+    await refresh_admin_cards(callback.bot, session, order, pressed_card(callback))
 
 
 async def start_text_input(
@@ -113,7 +100,7 @@ async def invoice_start(
 ) -> None:
     order = await get_order(session, callback_data.order_id)
     if order is None or order.status not in INVOICE_FROM:
-        await answer_stale(callback, order)
+        await answer_stale(callback, session, order)
         return
     await start_text_input(
         callback,
@@ -133,7 +120,7 @@ async def reject_start(
 ) -> None:
     order = await get_order(session, callback_data.order_id)
     if order is None or order.status not in REJECT_FROM:
-        await answer_stale(callback, order)
+        await answer_stale(callback, session, order)
         return
     await start_text_input(
         callback,
@@ -153,7 +140,7 @@ async def ask_start(
 ) -> None:
     order = await get_order(session, callback_data.order_id)
     if order is None:
-        await answer_stale(callback, order)
+        await answer_stale(callback, session, order)
         return
     await start_text_input(
         callback,
@@ -175,9 +162,9 @@ async def mark_paid(
         session, callback_data.order_id, OrderStatus.PRINTING, PAID_FROM
     )
     if order is None:
-        await answer_stale(callback, await get_order(session, callback_data.order_id))
+        await answer_stale(callback, session, await get_order(session, callback_data.order_id))
         return
-    await refresh_card(bot, callback.message.chat.id, callback.message.message_id, order)
+    await refresh_admin_cards(bot, session, order, pressed_card(callback))
     delivered = await notify_client(
         bot, order, f"Оплата по заказу №{order.id} получена. Заказ передан в работу 🖨"
     )
@@ -197,9 +184,9 @@ async def mark_ready(
         session, callback_data.order_id, OrderStatus.READY, READY_FROM
     )
     if order is None:
-        await answer_stale(callback, await get_order(session, callback_data.order_id))
+        await answer_stale(callback, session, await get_order(session, callback_data.order_id))
         return
-    await refresh_card(bot, callback.message.chat.id, callback.message.message_id, order)
+    await refresh_admin_cards(bot, session, order, pressed_card(callback))
     text = f"Заказ №{order.id} готов к выдаче ✅"
     if PICKUP_ADDRESS:
         text += f"\nАдрес самовывоза: {html.quote(PICKUP_ADDRESS)}."
@@ -250,7 +237,9 @@ async def invoice_amount(
         f"Реквизиты для оплаты:\n{payment}\n\n"
         "После оплаты мастер возьмёт заказ в работу.",
     )
-    await refresh_card(bot, data["card_chat_id"], data["card_message_id"], order)
+    await refresh_admin_cards(
+        bot, session, order, (data["card_chat_id"], data["card_message_id"])
+    )
     if delivered:
         await message.answer(f"Счёт по заказу №{order.id} на {order.amount} BYN отправлен клиенту.")
     else:
@@ -282,7 +271,9 @@ async def reject_reason(
         f"Причина: {html.quote(reason)}\n\n"
         f"Если есть вопросы — нажмите «{CONTACT_MASTER_BUTTON}».",
     )
-    await refresh_card(bot, data["card_chat_id"], data["card_message_id"], order)
+    await refresh_admin_cards(
+        bot, session, order, (data["card_chat_id"], data["card_message_id"])
+    )
     await message.answer(
         f"Заказ №{order.id} отклонён, клиент уведомлён." if delivered else CLIENT_UNREACHABLE
     )
@@ -336,4 +327,4 @@ async def cmd_order(
     if order is None:
         await message.answer(f"Заказ №{args} не найден.")
         return
-    await send_admin_card(bot, message.chat.id, order)
+    await send_admin_card(bot, session, message.chat.id, order)

@@ -1,13 +1,15 @@
-"""Отправка сообщений мастеру и клиенту с обработкой ошибок Telegram."""
+"""Отправка сообщений мастерам и клиенту с обработкой ошибок Telegram."""
 import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
 from bot.database.models import Order
 from bot.keyboards.admin import admin_order_kb
 from bot.services.formatting import admin_card_text
+from bot.services.orders import list_admin_cards, save_admin_card
 
 logger = logging.getLogger(__name__)
 
@@ -27,25 +29,62 @@ async def send_order_files(bot: Bot, chat_id: int, order: Order) -> None:
             await bot.send_document(chat_id, item["file_id"], caption=caption)
 
 
-async def send_admin_card(bot: Bot, chat_id: int, order: Order, title: str = "") -> None:
+async def send_admin_card(
+    bot: Bot, session: AsyncSession, chat_id: int, order: Order, title: str = ""
+) -> None:
+    """Карточка + файлы мастеру. Карточку запоминаем, чтобы потом обновлять её у всех."""
     text = f"{title}\n\n{admin_card_text(order)}" if title else admin_card_text(order)
-    await bot.send_message(chat_id, text, reply_markup=admin_order_kb(order))
+    card = await bot.send_message(chat_id, text, reply_markup=admin_order_kb(order))
+    await save_admin_card(session, order.id, card.chat.id, card.message_id)
     await send_order_files(bot, chat_id, order)
 
 
-async def notify_admin_new_order(bot: Bot, settings: Settings, order: Order) -> None:
-    """Уведомление мастеру о новом заказе. Ошибки не должны ломать оформление у клиента."""
-    if settings.admin_id is None:
-        logger.warning("ADMIN_ID не задан в .env — мастер не узнает о заказе №%s", order.id)
+async def notify_admins_new_order(
+    bot: Bot, session: AsyncSession, settings: Settings, order: Order
+) -> None:
+    """Уведомление всем мастерам. Ошибки не должны ломать оформление у клиента."""
+    if not settings.admin_ids:
+        logger.warning("ADMIN_IDS не задан в .env — мастера не узнают о заказе №%s", order.id)
         return
-    try:
-        await send_admin_card(bot, settings.admin_id, order, title="🆕 Новый заказ!")
-    except DELIVERY_ERRORS as error:
-        logger.warning(
-            "Не удалось уведомить мастера о заказе №%s: %s. Мастер нажимал /start у бота?",
-            order.id,
-            error,
-        )
+    for admin_id in settings.admin_ids:
+        # Ошибка у одного мастера не мешает остальным получить карточку.
+        try:
+            await send_admin_card(bot, session, admin_id, order, title="🆕 Новый заказ!")
+        except DELIVERY_ERRORS as error:
+            logger.warning(
+                "Мастер %s не получил заказ №%s: %s. Он нажимал /start у бота?",
+                admin_id,
+                order.id,
+                error,
+            )
+
+
+async def refresh_admin_cards(
+    bot: Bot,
+    session: AsyncSession,
+    order: Order,
+    pressed_card: tuple[int, int] | None = None,
+) -> None:
+    """Перерисовывает карточку заказа у всех мастеров: новый статус и кнопки.
+
+    pressed_card — (chat_id, message_id) карточки, на которой нажали кнопку. Её обновляем,
+    даже если она не записана в БД (карточки, отправленные до появления учёта).
+    """
+    cards = {(card.chat_id, card.message_id) for card in await list_admin_cards(session, order.id)}
+    if pressed_card is not None:
+        cards.add(pressed_card)
+    for chat_id, message_id in cards:
+        try:
+            await bot.edit_message_text(
+                text=admin_card_text(order),
+                chat_id=chat_id,
+                message_id=message_id,
+                reply_markup=admin_order_kb(order),
+            )
+        except DELIVERY_ERRORS as error:
+            # «message is not modified», карточку удалили, мастер заблокировал бота —
+            # не критично, остальные карточки всё равно обновляем.
+            logger.info("Карточка заказа №%s у %s не обновлена: %s", order.id, chat_id, error)
 
 
 async def notify_client(bot: Bot, order: Order, text: str) -> bool:

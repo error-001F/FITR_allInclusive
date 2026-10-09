@@ -52,3 +52,14 @@ class Order(Base):
     )
     # Когда мастер отклонил заказ (UTC). По нему удаляем старые отклонённые заказы.
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime)
+
+
+class AdminCard(Base):
+    """Карточка заказа, отправленная мастеру. Нужна, чтобы обновлять её у всех мастеров."""
+
+    __tablename__ = "admin_cards"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(index=True)
+    chat_id: Mapped[int] = mapped_column(BigInteger)
+    message_id: Mapped[int]

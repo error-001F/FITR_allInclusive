@@ -39,7 +39,7 @@ from bot.keyboards.orders import (
     material_kb,
     references_kb,
 )
-from bot.services.notifications import notify_admin_new_order
+from bot.services.notifications import notify_admins_new_order
 from bot.services.orders import create_order, get_last_contacts
 from bot.states import OrderForm
 
@@ -481,7 +481,7 @@ async def confirm_order(
     await callback.message.answer(final_text, reply_markup=main_menu_kb())
     await callback.answer()
     # Мастера уведомляем после ответа клиенту: сбой отправки мастеру его не затронет.
-    await notify_admin_new_order(bot, settings, order)
+    await notify_admins_new_order(bot, session, settings, order)
 
 
 @router.callback_query(PrintOptionCallback.filter())

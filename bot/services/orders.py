@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import delete, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import Order, OrderStatus, OrderType
+from bot.database.models import AdminCard, Order, OrderStatus, OrderType
 
 
 async def get_last_contacts(session: AsyncSession, user_id: int) -> tuple[str, str] | None:
@@ -102,15 +102,33 @@ async def update_order_status(
 
 
 async def delete_old_rejected_orders(session: AsyncSession, older_than: timedelta) -> int:
-    """Удаляет заказы, отклонённые раньше чем older_than назад. Возвращает их количество."""
-    result = await session.execute(
-        delete(Order).where(
-            Order.status == OrderStatus.REJECTED,
-            Order.rejected_at < utc_now() - older_than,
+    """Удаляет заказы, отклонённые раньше чем older_than назад, вместе с их карточками
+    у мастеров. Возвращает количество удалённых заказов."""
+    order_ids = (
+        await session.scalars(
+            select(Order.id).where(
+                Order.status == OrderStatus.REJECTED,
+                Order.rejected_at < utc_now() - older_than,
+            )
         )
-    )
+    ).all()
+    if not order_ids:
+        return 0
+    await session.execute(delete(AdminCard).where(AdminCard.order_id.in_(order_ids)))
+    await session.execute(delete(Order).where(Order.id.in_(order_ids)))
     await session.commit()
-    return result.rowcount
+    return len(order_ids)
+
+
+async def save_admin_card(
+    session: AsyncSession, order_id: int, chat_id: int, message_id: int
+) -> None:
+    session.add(AdminCard(order_id=order_id, chat_id=chat_id, message_id=message_id))
+    await session.commit()
+
+
+async def list_admin_cards(session: AsyncSession, order_id: int) -> list[AdminCard]:
+    return list(await session.scalars(select(AdminCard).where(AdminCard.order_id == order_id)))
 
 
 def utc_now() -> datetime:
