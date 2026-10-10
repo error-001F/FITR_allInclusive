@@ -19,7 +19,7 @@ from bot.catalog import (
 )
 from bot.config import Settings
 from bot.database.models import OrderType
-from bot.keyboards.menu import DESIGN_BUTTON, PRINT_BUTTON, main_menu_kb
+from bot.keyboards.menu import DESIGN_TEXTS, PRINT_TEXTS, main_menu_kb
 from bot.keyboards.orders import (
     CANCEL_BUTTON,
     CANCEL_CALLBACK,
@@ -157,7 +157,7 @@ async def cancel_order_callback(callback: CallbackQuery, state: FSMContext) -> N
     await callback.answer()
 
 
-@router.message(F.text == PRINT_BUTTON)
+@router.message(F.text.in_(PRINT_TEXTS))
 async def start_print_order(message: Message, state: FSMContext) -> None:
     # clear() сбрасывает недооформленный заказ, если пользователь начал заново.
     await state.clear()
@@ -169,7 +169,7 @@ async def start_print_order(message: Message, state: FSMContext) -> None:
     )
 
 
-@router.message(F.text == DESIGN_BUTTON)
+@router.message(F.text.in_(DESIGN_TEXTS))
 async def start_design_order(message: Message, state: FSMContext) -> None:
     await state.clear()
     await state.update_data(order_type=OrderType.DESIGN.value)
