@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.database.models import AdminCard, Order, OrderStatus, OrderType
@@ -131,23 +131,67 @@ async def update_print_params(
     return order
 
 
-async def delete_old_rejected_orders(session: AsyncSession, older_than: timedelta) -> int:
-    """Удаляет заказы, отклонённые раньше чем older_than назад, вместе с их карточками
-    у мастеров. Возвращает количество удалённых заказов."""
-    order_ids = (
-        await session.scalars(
-            select(Order.id).where(
-                Order.status == OrderStatus.REJECTED,
-                Order.rejected_at < utc_now() - older_than,
-            )
+async def find_expired_rejected_orders(
+    session: AsyncSession, older_than: timedelta
+) -> list[Order]:
+    """Заказы, отклонённые раньше чем older_than назад, — их пора удалять."""
+    result = await session.scalars(
+        select(Order).where(
+            Order.status == OrderStatus.REJECTED,
+            Order.rejected_at < utc_now() - older_than,
         )
-    ).all()
-    if not order_ids:
-        return 0
-    await session.execute(delete(AdminCard).where(AdminCard.order_id.in_(order_ids)))
-    await session.execute(delete(Order).where(Order.id.in_(order_ids)))
+    )
+    return list(result)
+
+
+async def delete_order(session: AsyncSession, order_id: int) -> None:
+    """Удаляет заказ вместе с записями о его карточках у мастеров."""
+    await session.execute(delete(AdminCard).where(AdminCard.order_id == order_id))
+    await session.execute(delete(Order).where(Order.id == order_id))
     await session.commit()
-    return len(order_ids)
+
+
+async def renumber_orders(session: AsyncSession) -> dict[int, int]:
+    """Перенумеровывает заказы подряд 1..N без пропусков, сохраняя их порядок.
+
+    Возвращает {старый номер: новый} только для изменившихся. Идём по возрастанию номера,
+    поэтому целевой номер всегда свободен: например, 2,4,5 → сначала 2→1 (№1 удалён),
+    потом 4→2 (№2 только что освободился) и т.д.
+    """
+    ids = (await session.scalars(select(Order.id).order_by(Order.id))).all()
+    mapping = {old: new for new, old in enumerate(ids, start=1) if old != new}
+    for old, new in mapping.items():
+        await session.execute(
+            update(Order).where(Order.id == old).values(id=new),
+            execution_options={"synchronize_session": False},
+        )
+        await session.execute(
+            update(AdminCard).where(AdminCard.order_id == old).values(order_id=new),
+            execution_options={"synchronize_session": False},
+        )
+    if mapping:
+        await session.commit()
+        # Объекты, загруженные до перенумерации, помнят старые номера — забываем их,
+        # чтобы следующие запросы в этой сессии читали заказы из БД заново.
+        session.expunge_all()
+    return mapping
+
+
+async def list_orders(
+    session: AsyncSession, statuses: set[OrderStatus] | None, limit: int
+) -> list[Order]:
+    """Заказы с указанными статусами (None — все), новые сверху."""
+    query = select(Order).order_by(Order.id.desc()).limit(limit)
+    if statuses is not None:
+        query = query.where(Order.status.in_(statuses))
+    return list(await session.scalars(query))
+
+
+async def count_orders(session: AsyncSession, statuses: set[OrderStatus] | None) -> int:
+    query = select(func.count()).select_from(Order)
+    if statuses is not None:
+        query = query.where(Order.status.in_(statuses))
+    return await session.scalar(query)
 
 
 async def save_admin_card(

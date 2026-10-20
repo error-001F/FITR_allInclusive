@@ -87,6 +87,28 @@ async def refresh_admin_cards(
             logger.info("Карточка заказа №%s у %s не обновлена: %s", order.id, chat_id, error)
 
 
+async def close_admin_cards(
+    bot: Bot,
+    session: AsyncSession,
+    order: Order,
+    text: str,
+    pressed_card: tuple[int, int] | None = None,
+) -> None:
+    """Перед удалением заказа: карточки у всех мастеров → текст без кнопок.
+
+    Обязательно до перенумерации: иначе кнопки удалённого заказа (adm:paid:3) после сдвига
+    номеров указывали бы на другой заказ, получивший №3.
+    """
+    cards = {(card.chat_id, card.message_id) for card in await list_admin_cards(session, order.id)}
+    if pressed_card is not None:
+        cards.add(pressed_card)
+    for chat_id, message_id in cards:
+        try:
+            await bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id)
+        except DELIVERY_ERRORS as error:
+            logger.info("Карточка заказа №%s у %s не закрыта: %s", order.id, chat_id, error)
+
+
 async def notify_client(bot: Bot, order: Order, text: str) -> bool:
     """Сообщение клиенту. False — не доставлено (например, клиент заблокировал бота)."""
     try:

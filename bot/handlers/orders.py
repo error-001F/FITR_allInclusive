@@ -39,6 +39,7 @@ from bot.keyboards.orders import (
     material_kb,
     references_kb,
 )
+from bot.services.history import describe_order, log_event
 from bot.services.notifications import notify_admins_new_order
 from bot.services.orders import create_order, get_last_contacts
 from bot.states import OrderForm
@@ -470,6 +471,7 @@ async def confirm_order(
         # Пустой список сохраняем как NULL: «референсов нет».
         attachments=data.get("attachments") or None,
     )
+    log_event(order, f"создан клиентом: {describe_order(order)}")
 
     await callback.message.edit_text(
         f"{format_order(data)}\n\n{html.bold(f'Заказ №{order.id} оформлен.')}"

@@ -6,7 +6,8 @@ from pathlib import Path
 from aiogram import Bot, F, Router, html
 from aiogram.filters import BaseFilter, Command, CommandObject, StateFilter
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.fsm.storage.base import BaseStorage
+from aiogram.types import CallbackQuery, Message, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import (
@@ -24,12 +25,30 @@ from bot.keyboards.admin import (
     ADMIN_SKIP_FILE_CALLBACK,
     AdminOrderCallback,
     AdminPrintCallback,
+    admin_order_kb,
+    issue_confirm_kb,
     model_file_kb,
+    orders_list_kb,
 )
 from bot.keyboards.menu import CONTACT_MASTER_BUTTON, MY_ORDERS_BUTTON
 from bot.keyboards.orders import color_kb, infill_kb, layer_kb, material_kb
-from bot.services.notifications import notify_client, refresh_admin_cards, send_admin_card
-from bot.services.orders import get_order, update_order_status, update_print_params
+from bot.services.formatting import order_list_line
+from bot.services.history import describe_order, log_event
+from bot.services.maintenance import renumber_after_delete
+from bot.services.notifications import (
+    close_admin_cards,
+    notify_client,
+    refresh_admin_cards,
+    send_admin_card,
+)
+from bot.services.orders import (
+    count_orders,
+    delete_order,
+    get_order,
+    list_orders,
+    update_order_status,
+    update_print_params,
+)
 from bot.states import AdminForm
 
 logger = logging.getLogger(__name__)
@@ -54,6 +73,10 @@ INVOICE_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT}
 PAID_FROM = {OrderStatus.AWAITING_PAYMENT}
 READY_FROM = {OrderStatus.PRINTING}
 REJECT_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT, OrderStatus.PRINTING}
+# Заказы «в работе» для /orders без аргументов.
+ACTIVE_STATUSES = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT, OrderStatus.PRINTING}
+# Сколько заказов показывать в /orders: 30 строк укладываются в лимит Telegram (4096 символов).
+ORDERS_LIST_LIMIT = 30
 # Параметры печати можно менять только до оплаты.
 PARAMS_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT}
 
@@ -74,6 +97,11 @@ def parse_amount(text: str) -> Decimal | None:
     if not amount.is_finite() or amount <= 0 or amount > MAX_AMOUNT:
         return None
     return amount.quantize(Decimal("0.01"))
+
+
+def master_name(user: User) -> str:
+    """Кто из мастеров выполнил действие — для журнала истории."""
+    return f"@{user.username}" if user.username else user.full_name
 
 
 def pressed_card(callback: CallbackQuery) -> tuple[int, int]:
@@ -181,6 +209,7 @@ async def mark_paid(
     if order is None:
         await answer_stale(callback, session, await get_order(session, callback_data.order_id))
         return
+    log_event(order, f"оплачен, передан в работу — мастер {master_name(callback.from_user)}")
     await refresh_admin_cards(bot, session, order, pressed_card(callback))
     delivered = await notify_client(
         bot, order, f"Оплата по заказу №{order.id} получена. Заказ передан в работу 🖨"
@@ -203,6 +232,7 @@ async def mark_ready(
     if order is None:
         await answer_stale(callback, session, await get_order(session, callback_data.order_id))
         return
+    log_event(order, f"готов к выдаче — мастер {master_name(callback.from_user)}")
     await refresh_admin_cards(bot, session, order, pressed_card(callback))
     text = f"Заказ №{order.id} готов к выдаче ✅"
     if PICKUP_ADDRESS:
@@ -241,6 +271,7 @@ async def invoice_amount(
     if order is None:
         await message.answer("Статус заказа уже изменился — счёт не выставлен.")
         return
+    log_event(order, f"счёт выставлен: {order.amount} BYN — мастер {master_name(message.from_user)}")
 
     if settings.payment_details:
         payment = html.quote(settings.payment_details)
@@ -280,6 +311,7 @@ async def reject_reason(
     if order is None:
         await message.answer("Статус заказа уже изменился — заказ не отклонён.")
         return
+    log_event(order, f"отклонён: {reason} — мастер {master_name(message.from_user)}")
 
     delivered = await notify_client(
         bot,
@@ -311,6 +343,7 @@ async def send_question(
     if order is None:
         await message.answer("Заказ не найден.")
         return
+    log_event(order, f"сообщение клиенту: {question} — мастер {master_name(message.from_user)}")
 
     delivered = await notify_client(
         bot,
@@ -381,6 +414,7 @@ async def save_params(
     if order is None:
         await message.answer("Статус заказа уже изменился — параметры не сохранены.")
         return
+    log_event(order, f"мастер изменил параметры: {describe_order(order)}")
 
     await refresh_admin_cards(
         bot, session, order, (data["card_chat_id"], data["card_message_id"])
@@ -546,6 +580,105 @@ async def params_cancel(callback: CallbackQuery, state: FSMContext) -> None:
 async def params_stale(callback: CallbackQuery) -> None:
     # Кнопка параметров нажата не на своём шаге (или после сохранения/отмены).
     await callback.answer("Эта кнопка уже неактуальна.")
+
+
+# --- Выдача: заказ удаляется сразу, номера сдвигаются ---
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "issue"))
+async def issue_start(
+    callback: CallbackQuery, callback_data: AdminOrderCallback, session: AsyncSession
+) -> None:
+    order = await get_order(session, callback_data.order_id)
+    if order is None or order.status != OrderStatus.READY:
+        await answer_stale(callback, session, order)
+        return
+    # Удаление необратимо — сначала спрашиваем подтверждение прямо на карточке.
+    await callback.message.edit_reply_markup(reply_markup=issue_confirm_kb(order))
+    await callback.answer("Подтвердите выдачу — заказ будет удалён")
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "issue_back"))
+async def issue_back(
+    callback: CallbackQuery, callback_data: AdminOrderCallback, session: AsyncSession
+) -> None:
+    order = await get_order(session, callback_data.order_id)
+    if order is None:
+        await answer_stale(callback, session, order)
+        return
+    await callback.message.edit_reply_markup(reply_markup=admin_order_kb(order))
+    await callback.answer()
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "issue_confirm"))
+async def issue_confirm(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    session: AsyncSession,
+    bot: Bot,
+    settings: Settings,
+    fsm_storage: BaseStorage,
+) -> None:
+    order = await get_order(session, callback_data.order_id)
+    if order is None or order.status != OrderStatus.READY:
+        await answer_stale(callback, session, order)
+        return
+
+    log_event(order, f"выдан клиенту, удалён из базы — мастер {master_name(callback.from_user)}")
+    # Карточки закрываем до удаления: потом номер может достаться другому заказу.
+    await close_admin_cards(
+        bot, session, order, f"📬 Заказ №{order.id} выдан клиенту и удалён.", pressed_card(callback)
+    )
+    await delete_order(session, order.id)
+    await callback.answer("Заказ выдан и удалён")
+    delivered = await notify_client(
+        bot, order, f"Заказ №{order.id} выдан. Спасибо, что обратились к нам! 🙌"
+    )
+    if not delivered:
+        await callback.message.answer(CLIENT_UNREACHABLE)
+    await renumber_after_delete(bot, session, fsm_storage, settings, {order.id})
+
+
+# --- Список заказов ---
+
+
+@router.message(Command("orders"))
+async def cmd_orders(message: Message, command: CommandObject, session: AsyncSession) -> None:
+    """/orders — активные заказы, /orders all — все. Новые сверху."""
+    arg = (command.args or "").strip().lower()
+    if arg not in ("", "all"):
+        await message.answer("Использование: /orders — активные заказы, /orders all — все заказы.")
+        return
+    statuses = None if arg == "all" else ACTIVE_STATUSES
+    orders = await list_orders(session, statuses, limit=ORDERS_LIST_LIMIT)
+    if not orders:
+        await message.answer("Активных заказов нет." if statuses else "Заказов нет.")
+        return
+
+    total = await count_orders(session, statuses)
+    title = "Активные заказы" if statuses else "Все заказы"
+    lines = "\n".join(order_list_line(order) for order in orders)
+    shown = f"\n\nПоказаны последние {len(orders)} из {total}." if total > len(orders) else ""
+    await message.answer(
+        f"{html.bold(title)} (новые сверху):\n\n{lines}{shown}\n\n"
+        "Нажмите номер, чтобы открыть карточку заказа.",
+        reply_markup=orders_list_kb(orders),
+    )
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "open"))
+async def open_order(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    session: AsyncSession,
+    bot: Bot,
+) -> None:
+    order = await get_order(session, callback_data.order_id)
+    if order is None:
+        await callback.answer("Заказ не найден — обновите список: /orders", show_alert=True)
+        return
+    await send_admin_card(bot, session, callback.message.chat.id, order)
+    await callback.answer()
 
 
 # --- Команды ---

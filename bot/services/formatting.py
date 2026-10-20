@@ -54,6 +54,23 @@ def order_details_lines(order: Order, description_limit: int | None = None) -> l
     return lines
 
 
+ORDER_TYPE_SHORT = {"print": "Печать", "design": "Разработка"}
+
+
+def order_list_line(order: Order) -> str:
+    """Одна строка заказа для списка /orders."""
+    parts = [
+        html.bold(f"№{order.id}"),
+        ORDER_TYPE_SHORT.get(order.order_type, order.order_type),
+        ORDER_STATUS_TITLES.get(order.status, order.status),
+    ]
+    if order.amount is not None:
+        parts.append(f"{order.amount} BYN")
+    parts.append(html.quote(order.customer_name))
+    parts.append(f"{local_time(order.created_at):%d.%m %H:%M}")
+    return " · ".join(parts)
+
+
 def admin_card_text(order: Order) -> str:
     """Карточка заказа для мастера: контакты клиента + все данные заказа."""
     if order.username:

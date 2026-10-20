@@ -7,23 +7,30 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.catalog import CLEANUP_INTERVAL, REJECTED_ORDER_TTL
+from bot.catalog import CLEANUP_INTERVAL
 from bot.config import Settings, get_settings
 from bot.database.engine import create_engine, create_session_pool, init_db
 from bot.handlers import get_routers
 from bot.middlewares.db import DbSessionMiddleware
-from bot.services.orders import delete_old_rejected_orders
+from bot.services.history import setup_history
+from bot.services.maintenance import cleanup_rejected
 
 
 logger = logging.getLogger(__name__)
 
 
-async def cleanup_rejected_orders(session_pool: async_sessionmaker[AsyncSession]) -> None:
-    """Фоновая задача: раз в CLEANUP_INTERVAL удаляет давно отклонённые заказы."""
+async def cleanup_rejected_orders(
+    bot: Bot,
+    dp: Dispatcher,
+    settings: Settings,
+    session_pool: async_sessionmaker[AsyncSession],
+) -> None:
+    """Фоновая задача: при старте и раз в CLEANUP_INTERVAL удаляет давно отклонённые
+    заказы и перенумеровывает оставшиеся."""
     while True:
         try:
             async with session_pool() as session:
-                deleted = await delete_old_rejected_orders(session, REJECTED_ORDER_TTL)
+                deleted = await cleanup_rejected(bot, session, dp.fsm.storage, settings)
             if deleted:
                 logger.info("Удалено отклонённых заказов: %s", deleted)
         except Exception:
@@ -51,6 +58,8 @@ async def main() -> None:
         format="%(asctime)s %(levelname)s %(name)s: %(message)s",
     )
     settings = get_settings()
+    # Журнал истории — рядом с базой: data/orders_history.log (папка data/ не попадает в git).
+    setup_history(settings.database_path.parent / "orders_history.log")
 
     engine = create_engine(settings.database_path)
     await init_db(engine)
@@ -61,7 +70,7 @@ async def main() -> None:
     )
     session_pool = create_session_pool(engine)
     dp = create_dispatcher(settings, session_pool)
-    cleanup_task = asyncio.create_task(cleanup_rejected_orders(session_pool))
+    cleanup_task = asyncio.create_task(cleanup_rejected_orders(bot, dp, settings, session_pool))
 
     try:
         await dp.start_polling(bot)
