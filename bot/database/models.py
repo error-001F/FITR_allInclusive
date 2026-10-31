@@ -47,6 +47,8 @@ class Order(Base):
     status: Mapped[str] = mapped_column(String(16), default=OrderStatus.NEW)
     # Сумма счёта, BYN — выставляет мастер.
     amount: Mapped[Decimal | None] = mapped_column(Numeric(10, 2))
+    # Вес из слайсера, г — по нему бот рассчитал сумму счёта.
+    weight_grams: Mapped[Decimal | None] = mapped_column(Numeric(8, 1))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

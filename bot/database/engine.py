@@ -40,3 +40,5 @@ def _add_missing_columns(conn: Connection) -> None:
         conn.execute(
             text("UPDATE orders SET rejected_at = CURRENT_TIMESTAMP WHERE status = 'rejected'")
         )
+    if "weight_grams" not in columns:
+        conn.execute(text("ALTER TABLE orders ADD COLUMN weight_grams NUMERIC(8, 1)"))

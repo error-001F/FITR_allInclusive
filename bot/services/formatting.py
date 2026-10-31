@@ -1,5 +1,6 @@
 """Оформление заказа для сообщений: общее для «Моих заказов» и карточки мастера."""
 from datetime import UTC, datetime
+from decimal import Decimal
 
 from aiogram import html
 
@@ -13,6 +14,11 @@ def local_time(dt: datetime) -> datetime:
     if dt.tzinfo is None:
         dt = dt.replace(tzinfo=UTC)
     return dt.astimezone(LOCAL_TIMEZONE)
+
+
+def format_weight(weight: Decimal) -> str:
+    """124.0 → «124», 124.5 → «124.5» (без лишних нулей и без 1E+2)."""
+    return f"{weight.normalize():f}"
 
 
 def order_header(order: Order) -> str:
@@ -49,6 +55,8 @@ def order_details_lines(order: Order, description_limit: int | None = None) -> l
 
     # Неизвестный статус (если появится новый) показываем как есть, а не падаем.
     lines.append(f"Статус: {ORDER_STATUS_TITLES.get(order.status, order.status)}")
+    if order.weight_grams is not None:
+        lines.append(f"Вес: {format_weight(order.weight_grams)} г")
     if order.amount is not None:
         lines.append(f"Сумма: {order.amount} BYN")
     return lines

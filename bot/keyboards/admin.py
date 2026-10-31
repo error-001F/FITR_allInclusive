@@ -11,7 +11,8 @@ ADMIN_SKIP_FILE_CALLBACK = "adm_skip_file"
 class AdminOrderCallback(CallbackData, prefix="adm"):
     """Кнопка карточки заказа у мастера, например adm:invoice:5."""
 
-    # invoice | paid | ready | reject | params | issue | issue_confirm | issue_back | open
+    # invoice | invoice_ok | invoice_manual | invoice_weight | paid | ready | reject | params |
+    # issue | issue_confirm | issue_back | open
     action: str
     order_id: int
 
@@ -94,5 +95,16 @@ def model_file_kb(has_file: bool) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [InlineKeyboardButton(text=skip_text, callback_data=ADMIN_SKIP_FILE_CALLBACK)],
             [InlineKeyboardButton(text="Отмена", callback_data=ADMIN_CANCEL_CALLBACK)],
+        ]
+    )
+
+
+def price_calc_kb(order: Order, total) -> InlineKeyboardMarkup:
+    """Под расчётом цены: принять сумму бота, ввести свою или пересчитать с другим весом."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_button(f"✅ Выставить {total} BYN", "invoice_ok", order)],
+            [_button("✏️ Своя сумма", "invoice_manual", order),
+             _button("⚖️ Другой вес", "invoice_weight", order)],
         ]
     )

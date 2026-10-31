@@ -19,6 +19,8 @@ class OrderForm(StatesGroup):
 
 class AdminForm(StatesGroup):
     # Мастер вводит текст для конкретного заказа; order_id и id карточки лежат в данных FSM.
+    waiting_weight = State()  # вес из слайсера → бот считает сумму
+    confirming_amount = State()  # мастер подтверждает расчёт или вводит свою сумму
     waiting_amount = State()
     waiting_reject_reason = State()
     # Мастер задаёт параметры печати (этап 5б); выбранное копится в данных FSM.

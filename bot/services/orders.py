@@ -84,8 +84,12 @@ async def update_order_status(
     new_status: OrderStatus,
     allowed_from: set[OrderStatus],
     amount: Decimal | None = None,
+    weight_grams: Decimal | None | object = ...,
 ) -> Order | None:
     """Меняет статус, только если текущий входит в allowed_from.
+
+    weight_grams: вес, по которому посчитан счёт; None — очистить (сумма введена вручную),
+    ... (по умолчанию) — не трогать.
 
     None — заказа нет или его статус уже другой (например, мастер нажал старую кнопку).
     """
@@ -95,6 +99,8 @@ async def update_order_status(
     order.status = new_status
     if amount is not None:
         order.amount = amount
+    if weight_grams is not ...:
+        order.weight_grams = weight_grams
     if new_status == OrderStatus.REJECTED:
         order.rejected_at = utc_now()
     await session.commit()

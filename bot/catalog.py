@@ -1,6 +1,7 @@
 """Справочники и цены. Меняйте значения здесь — прайс и кнопки в боте обновятся сами."""
+from dataclasses import dataclass
 from datetime import timedelta
-from decimal import Decimal
+from decimal import ROUND_CEILING, Decimal
 from zoneinfo import ZoneInfo
 
 # Время в БД хранится в UTC; клиенту показываем в этом часовом поясе.
@@ -57,6 +58,29 @@ INFILL_SURCHARGES = {
     80: Decimal("7.41"),
     100: Decimal("9.88"),
 }
+
+# Расчёт цены печати: вес из слайсера × цена за грамм (по слою) + наценка за заполнение.
+MAX_WEIGHT_GRAMS = Decimal("5000")  # стол 250×250×250 мм — тяжелее практически не бывает
+PRICE_ROUNDING = Decimal("0.1")  # итог округляется вверх до 10 копеек
+
+
+@dataclass(frozen=True)
+class PriceCalc:
+    weight: Decimal
+    price_per_gram: Decimal
+    print_cost: Decimal  # вес × цена за грамм
+    surcharge: Decimal  # наценка за заполнение
+    exact: Decimal  # сумма до округления
+    total: Decimal  # итог, округлённый вверх до 10 копеек
+
+
+def calculate_print_price(weight: Decimal, layer_height: str, infill: int) -> PriceCalc:
+    price_per_gram = LAYER_PRICES[layer_height]
+    print_cost = (weight * price_per_gram).quantize(Decimal("0.01"))
+    surcharge = INFILL_SURCHARGES[infill]
+    exact = print_cost + surcharge
+    total = exact.quantize(PRICE_ROUNDING, rounding=ROUND_CEILING).quantize(Decimal("0.01"))
+    return PriceCalc(weight, price_per_gram, print_cost, surcharge, exact, total)
 
 DELIVERY_METHODS = ["самовывоз", "европочта", "белпочта"]
 # Показывается в прайсе; пустая строка — адрес не выводится.

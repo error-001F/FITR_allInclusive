@@ -15,11 +15,14 @@ from bot.catalog import (
     INFILL_SURCHARGES,
     LAYER_PRICES,
     MATERIALS,
+    MAX_WEIGHT_GRAMS,
     PICKUP_ADDRESS,
     PRINT_EXTENSIONS,
+    PriceCalc,
+    calculate_print_price,
 )
 from bot.config import Settings
-from bot.database.models import Order, OrderStatus
+from bot.database.models import Order, OrderStatus, OrderType
 from bot.keyboards.admin import (
     ADMIN_CANCEL_CALLBACK,
     ADMIN_SKIP_FILE_CALLBACK,
@@ -29,11 +32,12 @@ from bot.keyboards.admin import (
     issue_confirm_kb,
     model_file_kb,
     orders_list_kb,
+    price_calc_kb,
 )
 from bot.keyboards.menu import CONTACT_MASTER_BUTTON, MY_ORDERS_BUTTON
 from bot.keyboards.orders import color_kb, infill_kb, layer_kb, material_kb
 from bot.services.chat import count_messages
-from bot.services.formatting import order_list_line
+from bot.services.formatting import format_weight, order_list_line
 from bot.services.history import describe_order, log_event
 from bot.services.maintenance import renumber_after_delete
 from bot.services.notifications import (
@@ -100,6 +104,42 @@ def parse_amount(text: str) -> Decimal | None:
     return amount.quantize(Decimal("0.01"))
 
 
+def parse_weight(text: str) -> Decimal | None:
+    """«124», «124,5», «124 г» → Decimal('124.0'); некорректный ввод → None."""
+    cleaned = text.lower()
+    for unit in ("граммов", "грамм", "гр", "г"):
+        cleaned = cleaned.replace(unit, "")
+    cleaned = cleaned.replace(",", ".").replace(" ", "")
+    try:
+        weight = Decimal(cleaned)
+    except InvalidOperation:
+        return None
+    if not weight.is_finite() or weight <= 0 or weight > MAX_WEIGHT_GRAMS:
+        return None
+    return weight.quantize(Decimal("0.1"))
+
+
+def has_print_params(order: Order) -> bool:
+    """Можно ли посчитать цену: слой и заполнение заданы и есть в текущем прайсе."""
+    return order.layer_height in LAYER_PRICES and order.infill in INFILL_SURCHARGES
+
+
+def price_calc_text(order: Order, calc: PriceCalc) -> str:
+    lines = [
+        html.bold(f"Расчёт по заказу №{order.id}:"),
+        f"{format_weight(calc.weight)} г × {calc.price_per_gram} BYN/г "
+        f"(слой {order.layer_height} мм) = {calc.print_cost} BYN",
+        f"Заполнение {order.infill}%: +{calc.surcharge} BYN",
+    ]
+    if calc.total == calc.exact:
+        lines.append(html.bold(f"Итого: {calc.total} BYN"))
+    else:
+        lines.append(html.bold(f"Итого: {calc.exact} → {calc.total} BYN") + " (округление до 10 коп. вверх)")
+    if order.order_type == OrderType.DESIGN:
+        lines.append("\nЭто только печать — стоимость разработки добавьте через «✏️ Своя сумма».")
+    return "\n".join(lines)
+
+
 def master_name(user: User) -> str:
     """Кто из мастеров выполнил действие — для журнала истории."""
     return f"@{user.username}" if user.username else user.full_name
@@ -148,13 +188,74 @@ async def invoice_start(
     if order is None or order.status not in INVOICE_FROM:
         await answer_stale(callback, session, order)
         return
-    await start_text_input(
-        callback,
-        state,
-        order,
-        AdminForm.waiting_amount,
-        f"Введите итоговую сумму по заказу №{order.id} в BYN (например, 12.50).",
+    if has_print_params(order):
+        # Слой и заполнение известны — не хватает только веса, его даёт слайсер.
+        await start_text_input(
+            callback,
+            state,
+            order,
+            AdminForm.waiting_weight,
+            f"Введите вес модели из слайсера по заказу №{order.id}, г (например, 124) — "
+            "бот рассчитает сумму.",
+        )
+    else:
+        await start_text_input(
+            callback,
+            state,
+            order,
+            AdminForm.waiting_amount,
+            f"Введите итоговую сумму по заказу №{order.id} в BYN (например, 12.50).",
+        )
+
+
+@router.callback_query(AdminForm.confirming_amount, AdminOrderCallback.filter(F.action == "invoice_ok"))
+async def invoice_ok(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    state: FSMContext,
+    session: AsyncSession,
+    bot: Bot,
+    settings: Settings,
+) -> None:
+    data = await state.get_data()
+    if data.get("order_id") != callback_data.order_id:
+        await callback.answer("Эта кнопка уже неактуальна.")
+        return
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await send_invoice(
+        callback.message, state, session, bot, settings, callback.from_user, Decimal(data["calc_total"])
     )
+    await callback.answer()
+
+
+@router.callback_query(
+    AdminForm.confirming_amount,
+    AdminOrderCallback.filter(F.action.in_({"invoice_manual", "invoice_weight"})),
+)
+async def invoice_change(
+    callback: CallbackQuery, callback_data: AdminOrderCallback, state: FSMContext
+) -> None:
+    data = await state.get_data()
+    if data.get("order_id") != callback_data.order_id:
+        await callback.answer("Эта кнопка уже неактуальна.")
+        return
+    await callback.message.edit_reply_markup(reply_markup=None)
+    if callback_data.action == "invoice_manual":
+        await state.set_state(AdminForm.waiting_amount)
+        prompt = f"Введите свою сумму по заказу №{callback_data.order_id} в BYN (например, 45)."
+    else:
+        await state.set_state(AdminForm.waiting_weight)
+        prompt = f"Введите другой вес по заказу №{callback_data.order_id}, г."
+    await callback.message.answer(f"{prompt}\n\nОтмена — /cancel.")
+    await callback.answer()
+
+
+@router.callback_query(
+    AdminOrderCallback.filter(F.action.in_({"invoice_ok", "invoice_manual", "invoice_weight"}))
+)
+async def invoice_stale(callback: CallbackQuery) -> None:
+    # Кнопка расчёта нажата не на своём шаге: счёт уже выставлен, отменён или начат заново.
+    await callback.answer("Эта кнопка уже неактуальна.")
 
 
 @router.callback_query(AdminOrderCallback.filter(F.action == "reject"))
@@ -228,7 +329,38 @@ async def mark_ready(
 # --- Ввод текста мастером ---
 
 
-@router.message(AdminForm.waiting_amount, F.text)
+# ~F.text.startswith("/"): команды (/order, /orders) на шагах ввода не считаются вводом.
+@router.message(AdminForm.waiting_weight, F.text, ~F.text.startswith("/"))
+async def invoice_weight(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    weight = parse_weight(message.text)
+    if weight is None:
+        await message.answer(
+            f"Не понял вес. Введите число граммов больше 0 и не больше {MAX_WEIGHT_GRAMS}, "
+            "например 124. Отмена — /cancel."
+        )
+        return
+
+    data = await state.get_data()
+    order = await get_order(session, data["order_id"])
+    if order is None or order.status not in INVOICE_FROM:
+        await state.clear()
+        await message.answer("Статус заказа уже изменился — счёт не выставлен.")
+        return
+    if not has_print_params(order):
+        # Параметры печати могли убрать или поменять, пока мастер смотрел в слайсер.
+        await state.set_state(AdminForm.waiting_amount)
+        await message.answer(
+            "У заказа нет параметров печати для расчёта — введите сумму в BYN. Отмена — /cancel."
+        )
+        return
+
+    calc = calculate_print_price(weight, order.layer_height, order.infill)
+    await state.update_data(weight=str(weight), calc_total=str(calc.total))
+    await state.set_state(AdminForm.confirming_amount)
+    await message.answer(price_calc_text(order, calc), reply_markup=price_calc_kb(order, calc.total))
+
+
+@router.message(AdminForm.waiting_amount, F.text, ~F.text.startswith("/"))
 async def invoice_amount(
     message: Message,
     state: FSMContext,
@@ -243,26 +375,64 @@ async def invoice_amount(
             "например 12.50. Отмена — /cancel."
         )
         return
+    await send_invoice(message, state, session, bot, settings, message.from_user, amount)
 
+
+async def send_invoice(
+    message: Message,
+    state: FSMContext,
+    session: AsyncSession,
+    bot: Bot,
+    settings: Settings,
+    master: User,
+    amount: Decimal,
+) -> None:
+    """Выставляет счёт: статус «Ожидает оплаты», сумма клиенту, карточки, журнал."""
     data = await state.get_data()
     await state.clear()
+    weight = Decimal(data["weight"]) if data.get("weight") else None
     order = await update_order_status(
-        session, data["order_id"], OrderStatus.AWAITING_PAYMENT, INVOICE_FROM, amount=amount
+        session,
+        data["order_id"],
+        OrderStatus.AWAITING_PAYMENT,
+        INVOICE_FROM,
+        amount=amount,
+        # Вес храним, если мастер его вводил (даже если сумму поставил свою).
+        weight_grams=weight,
     )
     if order is None:
         await message.answer("Статус заказа уже изменился — счёт не выставлен.")
         return
-    log_event(order, f"счёт выставлен: {order.amount} BYN — мастер {master_name(message.from_user)}")
+
+    # Сумма «по расчёту», только если она совпадает с формулой для текущих параметров заказа.
+    calc = None
+    if weight is not None and has_print_params(order):
+        calc = calculate_print_price(weight, order.layer_height, order.infill)
+        if calc.total != amount:
+            calc = None
+    if calc:
+        how = (
+            f"расчёт: {format_weight(weight)} г, слой {order.layer_height} мм, "
+            f"заполнение {order.infill}%"
+        )
+    else:
+        how = "сумма мастера"
+    log_event(order, f"счёт выставлен: {order.amount} BYN ({how}) — мастер {master_name(master)}")
 
     if settings.payment_details:
         payment = html.quote(settings.payment_details)
     else:
         logger.warning("PAYMENT_DETAILS не задан в .env — клиент получил счёт без реквизитов")
         payment = "реквизиты мастер пришлёт отдельным сообщением."
+    calc_line = ""
+    if calc:
+        calc_line = f"\nРасчёт: {format_weight(weight)} г × {calc.price_per_gram} BYN/г"
+        if calc.surcharge:
+            calc_line += f" + {calc.surcharge} BYN за заполнение"
     delivered = await notify_client(
         bot,
         order,
-        f"Заказ №{order.id}: итоговая сумма {html.bold(f'{order.amount} BYN')}.\n\n"
+        f"Заказ №{order.id}: итоговая сумма {html.bold(f'{order.amount} BYN')}.{calc_line}\n\n"
         f"Реквизиты для оплаты:\n{payment}\n\n"
         "После оплаты мастер возьмёт заказ в работу.",
     )
@@ -309,10 +479,16 @@ async def reject_reason(
     )
 
 
-@router.message(AdminForm.waiting_amount)
+@router.message(AdminForm.waiting_amount, ~F.text.startswith("/"))
+@router.message(AdminForm.waiting_weight, ~F.text.startswith("/"))
 @router.message(AdminForm.waiting_reject_reason)
 async def admin_text_expected(message: Message) -> None:
     await message.answer("Нужен текст сообщением. Отмена — /cancel.")
+
+
+@router.message(AdminForm.confirming_amount, ~F.text.startswith("/"))
+async def confirming_amount_expected(message: Message) -> None:
+    await message.answer("Нажмите кнопку под расчётом: выставить, своя сумма или другой вес. Отмена — /cancel.")
 
 
 # --- Параметры печати (этап 5б): мастер дополняет или корректирует заказ ---
