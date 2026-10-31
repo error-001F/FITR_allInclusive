@@ -2,6 +2,7 @@ from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
 from bot.database.models import Order, OrderStatus
+from bot.keyboards.chat import history_button
 
 ADMIN_CANCEL_CALLBACK = "adm_cancel"
 ADMIN_SKIP_FILE_CALLBACK = "adm_skip_file"
@@ -10,7 +11,7 @@ ADMIN_SKIP_FILE_CALLBACK = "adm_skip_file"
 class AdminOrderCallback(CallbackData, prefix="adm"):
     """Кнопка карточки заказа у мастера, например adm:invoice:5."""
 
-    # invoice | paid | ready | reject | ask | params | issue | issue_confirm | issue_back | open
+    # invoice | paid | ready | reject | params | issue | issue_confirm | issue_back | open
     action: str
     order_id: int
 
@@ -39,7 +40,7 @@ def admin_order_kb(order: Order) -> InlineKeyboardMarkup:
     if status == OrderStatus.NEW:
         rows = [
             [_button("💳 Выставить счёт", "invoice", order),
-             _button("❓ Уточнить детали", "ask", order)],
+             history_button(order)],
             [_button("🛠 Параметры печати", "params", order),
              _button("❌ Отклонить", "reject", order)],
         ]
@@ -48,21 +49,21 @@ def admin_order_kb(order: Order) -> InlineKeyboardMarkup:
             [_button("✅ Оплачен → в печать", "paid", order),
              _button("💳 Изменить сумму", "invoice", order)],
             [_button("🛠 Параметры печати", "params", order),
-             _button("❓ Уточнить", "ask", order)],
+             history_button(order)],
             [_button("❌ Отклонить", "reject", order)],
         ]
     elif status == OrderStatus.PRINTING:
         rows = [
-            [_button("📦 Готов к выдаче", "ready", order), _button("❓ Уточнить", "ask", order)],
+            [_button("📦 Готов к выдаче", "ready", order), history_button(order)],
         ]
     elif status == OrderStatus.READY:
         rows = [
             [_button("📬 Выдан клиенту", "issue", order),
-             _button("❓ Написать клиенту", "ask", order)],
+             history_button(order)],
         ]
     else:
         # rejected — заказ удалится через сутки, но написать клиенту ещё можно.
-        rows = [[_button("❓ Написать клиенту", "ask", order)]]
+        rows = [[history_button(order)]]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -76,10 +77,13 @@ def issue_confirm_kb(order: Order) -> InlineKeyboardMarkup:
     )
 
 
-def orders_list_kb(orders: list[Order]) -> InlineKeyboardMarkup:
-    """Кнопки «№N» под списком /orders — по 5 в ряд, нажатие открывает карточку."""
-    buttons = [_button(f"№{order.id}", "open", order) for order in orders]
-    rows = [buttons[i : i + 5] for i in range(0, len(buttons), 5)]
+def orders_list_kb(orders: list[Order], chat_counts: dict[int, int]) -> InlineKeyboardMarkup:
+    """Под списком /orders строка на заказ: [📋 №N] — карточка, [💬 Уточнить №N (k)] —
+    история переписки, k — сколько в ней сообщений."""
+    rows = [
+        [_button(f"📋 №{order.id}", "open", order), history_button(order, chat_counts.get(order.id, 0))]
+        for order in orders
+    ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

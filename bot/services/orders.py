@@ -5,7 +5,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from bot.database.models import AdminCard, Order, OrderStatus, OrderType
+from bot.database.models import AdminCard, ChatMessage, Order, OrderStatus, OrderType
 
 
 async def get_last_contacts(session: AsyncSession, user_id: int) -> tuple[str, str] | None:
@@ -145,8 +145,9 @@ async def find_expired_rejected_orders(
 
 
 async def delete_order(session: AsyncSession, order_id: int) -> None:
-    """Удаляет заказ вместе с записями о его карточках у мастеров."""
+    """Удаляет заказ вместе с записями о его карточках у мастеров и перепиской."""
     await session.execute(delete(AdminCard).where(AdminCard.order_id == order_id))
+    await session.execute(delete(ChatMessage).where(ChatMessage.order_id == order_id))
     await session.execute(delete(Order).where(Order.id == order_id))
     await session.commit()
 
@@ -167,6 +168,11 @@ async def renumber_orders(session: AsyncSession) -> dict[int, int]:
         )
         await session.execute(
             update(AdminCard).where(AdminCard.order_id == old).values(order_id=new),
+            execution_options={"synchronize_session": False},
+        )
+        # История переписки переезжает на новый номер вместе с заказом.
+        await session.execute(
+            update(ChatMessage).where(ChatMessage.order_id == old).values(order_id=new),
             execution_options={"synchronize_session": False},
         )
     if mapping:

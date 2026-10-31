@@ -55,3 +55,9 @@ def describe_order(order: Order) -> str:
     if params:
         parts.append("печать " + ", ".join(params))
     return "; ".join(parts) or "без деталей"
+
+
+def log_general(name: str, username: str | None, user_id: int, event: str) -> None:
+    """Событие без заказа — например, общий вопрос клиента мастеру."""
+    telegram = f"@{username}" if username else f"id {user_id}"
+    history_logger.info("без заказа | %s, %s | %s", name, telegram, " ".join(event.split()))

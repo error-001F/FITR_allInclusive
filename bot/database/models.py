@@ -63,3 +63,22 @@ class AdminCard(Base):
     order_id: Mapped[int] = mapped_column(index=True)
     chat_id: Mapped[int] = mapped_column(BigInteger)
     message_id: Mapped[int]
+
+
+class ChatMessage(Base):
+    """Сообщение переписки клиента и мастера по заказу (история для «💬 Уточнить»)."""
+
+    __tablename__ = "chat_messages"
+
+    id: Mapped[int] = mapped_column(primary_key=True)
+    order_id: Mapped[int] = mapped_column(index=True)
+    author_role: Mapped[str] = mapped_column(String(8))  # client | master
+    author_id: Mapped[int] = mapped_column(BigInteger)
+    author_name: Mapped[str] = mapped_column(String(64))
+    kind: Mapped[str] = mapped_column(String(16))  # text | photo | document
+    text: Mapped[str | None] = mapped_column(Text)
+    # Фото/файл хранится в Telegram, здесь — только file_id для кнопки «📎 Вложения».
+    file_id: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

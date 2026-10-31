@@ -32,6 +32,7 @@ from bot.keyboards.admin import (
 )
 from bot.keyboards.menu import CONTACT_MASTER_BUTTON, MY_ORDERS_BUTTON
 from bot.keyboards.orders import color_kb, infill_kb, layer_kb, material_kb
+from bot.services.chat import count_messages
 from bot.services.formatting import order_list_line
 from bot.services.history import describe_order, log_event
 from bot.services.maintenance import renumber_after_delete
@@ -176,26 +177,6 @@ async def reject_start(
     )
 
 
-@router.callback_query(AdminOrderCallback.filter(F.action == "ask"))
-async def ask_start(
-    callback: CallbackQuery,
-    callback_data: AdminOrderCallback,
-    state: FSMContext,
-    session: AsyncSession,
-) -> None:
-    order = await get_order(session, callback_data.order_id)
-    if order is None:
-        await answer_stale(callback, session, order)
-        return
-    await start_text_input(
-        callback,
-        state,
-        order,
-        AdminForm.waiting_question,
-        f"Напишите сообщение клиенту по заказу №{order.id}.",
-    )
-
-
 @router.callback_query(AdminOrderCallback.filter(F.action == "paid"))
 async def mark_paid(
     callback: CallbackQuery,
@@ -328,35 +309,8 @@ async def reject_reason(
     )
 
 
-@router.message(AdminForm.waiting_question, F.text)
-async def send_question(
-    message: Message, state: FSMContext, session: AsyncSession, bot: Bot
-) -> None:
-    question = message.text.strip()
-    if len(question) > MAX_TEXT_LENGTH:
-        await message.answer(f"Слишком длинно — сократите до {MAX_TEXT_LENGTH} символов.")
-        return
-
-    data = await state.get_data()
-    await state.clear()
-    order = await get_order(session, data["order_id"])
-    if order is None:
-        await message.answer("Заказ не найден.")
-        return
-    log_event(order, f"сообщение клиенту: {question} — мастер {master_name(message.from_user)}")
-
-    delivered = await notify_client(
-        bot,
-        order,
-        f"Мастер по заказу №{order.id}:\n\n{html.quote(question)}\n\n"
-        f"Ответить можно через кнопку «{CONTACT_MASTER_BUTTON}».",
-    )
-    await message.answer("Сообщение отправлено клиенту." if delivered else CLIENT_UNREACHABLE)
-
-
 @router.message(AdminForm.waiting_amount)
 @router.message(AdminForm.waiting_reject_reason)
-@router.message(AdminForm.waiting_question)
 async def admin_text_expected(message: Message) -> None:
     await message.answer("Нужен текст сообщением. Отмена — /cancel.")
 
@@ -651,6 +605,7 @@ async def cmd_orders(message: Message, command: CommandObject, session: AsyncSes
         return
     statuses = None if arg == "all" else ACTIVE_STATUSES
     orders = await list_orders(session, statuses, limit=ORDERS_LIST_LIMIT)
+    chat_counts = await count_messages(session, [order.id for order in orders])
     if not orders:
         await message.answer("Активных заказов нет." if statuses else "Заказов нет.")
         return
@@ -661,8 +616,8 @@ async def cmd_orders(message: Message, command: CommandObject, session: AsyncSes
     shown = f"\n\nПоказаны последние {len(orders)} из {total}." if total > len(orders) else ""
     await message.answer(
         f"{html.bold(title)} (новые сверху):\n\n{lines}{shown}\n\n"
-        "Нажмите номер, чтобы открыть карточку заказа.",
-        reply_markup=orders_list_kb(orders),
+        "📋 — карточка заказа, 💬 — переписка с клиентом.",
+        reply_markup=orders_list_kb(orders, chat_counts),
     )
 
 

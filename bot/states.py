@@ -21,10 +21,15 @@ class AdminForm(StatesGroup):
     # Мастер вводит текст для конкретного заказа; order_id и id карточки лежат в данных FSM.
     waiting_amount = State()
     waiting_reject_reason = State()
-    waiting_question = State()
     # Мастер задаёт параметры печати (этап 5б); выбранное копится в данных FSM.
     choosing_material = State()
     choosing_layer = State()
     choosing_infill = State()
     choosing_color = State()
     waiting_model_file = State()
+
+
+class ChatForm(StatesGroup):
+    # Одно сообщение — одно нажатие кнопки; после отправки состояние сбрасывается.
+    client_message = State()  # данные: order_id (0 — общий вопрос), master_id (кому ответ) или None
+    master_message = State()  # данные: order_id, client_id
