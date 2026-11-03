@@ -5,8 +5,8 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-PRINT_BUTTON = "🖨 Заказать печать"
-DESIGN_BUTTON = "✏️ Заказать разработку модели"
+PRINT_BUTTON = "🖨 Заказать печать(по готовой модели)"
+DESIGN_BUTTON = "✏️ Заказать разработку модели(с нуля)"
 PRICE_BUTTON = "💰 Прайс и информация"
 MY_ORDERS_BUTTON = "📦 Мои заказы"
 CONTACT_MASTER_BUTTON = "💬 Связаться с мастером"

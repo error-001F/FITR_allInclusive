@@ -12,6 +12,8 @@ class OrderForm(StatesGroup):
     waiting_description = State()
     waiting_references = State()
     # Общие шаги.
+    choosing_delivery = State()
+    waiting_pickup_point = State()  # только для Европочты
     waiting_name = State()
     waiting_contact = State()
     confirming = State()

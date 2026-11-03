@@ -1,7 +1,7 @@
 from aiogram import F, Router, html
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
-from aiogram.types import Message, ReplyKeyboardMarkup
+from aiogram.types import LinkPreviewOptions, Message, ReplyKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import price_info_text
@@ -26,13 +26,31 @@ MY_ORDERS_LIMIT = 10
 DESCRIPTION_PREVIEW_LENGTH = 60
 
 
+def welcome_text() -> str:
+    """Вступительная речь, которую бот присылает на каждый /start."""
+    return (
+        "Привет. Если коротко —\n"
+        "Мы занимаемся дешёвой 3D-печатью с поддержкой мастера-конструктора "
+        "и возможностью разрабатывать модели под ваши цели.\n\n"
+        f"{html.bold('👾 Для студентов БНТУ скидка 25% на первый заказ 👾')}\n\n"
+        "1) Чтобы оформить заказ, пользуйся меню ниже — там все необходимые шаги.\n"
+        "2) Если у тебя уже есть идея, ты также можешь найти модель самостоятельно "
+        "и прислать её нам. Как пример оставляем ссылки на каталоги 3D-моделей:\n"
+        ' - <a href="https://www.thingiverse.com">Thingiverse</a>\n'
+        ' - <a href="https://cults3d.com">Cults3D</a>\n\n'
+        "❗ Оказывается помощь по выполнению курсовых работ. Цена индивидуально — "
+        f"пишите мастеру напрямую через кнопку «{CONTACT_MASTER_BUTTON}»."
+    )
+
+
 @router.message(CommandStart())
 async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
-    name = message.from_user.full_name if message.from_user else "друг"
     await message.answer(
-        f"Привет, {html.bold(html.quote(name))}! Выберите действие в меню ниже.",
+        welcome_text(),
         reply_markup=main_menu_kb(),
+        # Без превью ссылки на каталог под приветствием.
+        link_preview_options=LinkPreviewOptions(is_disabled=True),
     )
 
 

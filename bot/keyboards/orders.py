@@ -6,7 +6,14 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 
-from bot.catalog import COLORS, INFILL_SURCHARGES, LAYER_PRICES, MATERIALS
+from bot.catalog import (
+    COLORS,
+    DELIVERY_METHODS,
+    INFILL_SURCHARGES,
+    LAYER_PRICES,
+    MATERIALS,
+    delivery_title,
+)
 from bot.database.models import OrderType
 
 CANCEL_BUTTON = "Отмена"
@@ -28,6 +35,12 @@ class PrintOptionCallback(CallbackData, prefix="print"):
 
     field: str
     value: str
+
+
+class DeliveryCallback(CallbackData, prefix="delivery"):
+    """Кнопка выбора способа доставки, например delivery:европочта."""
+
+    method: str
 
 
 # Значки-градиент «грубо → качественно» и «легко → прочно» в тексте кнопок.
@@ -93,6 +106,20 @@ def color_kb(
     callback: OptionCallback = PrintOptionCallback, cancel: str = CANCEL_CALLBACK
 ) -> InlineKeyboardMarkup:
     return _options_kb("color", [(c, c) for c in COLORS], callback, cancel)
+
+
+def delivery_kb() -> InlineKeyboardMarkup:
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=delivery_title(method),
+                callback_data=DeliveryCallback(method=method).pack(),
+            )
+        ]
+        for method in DELIVERY_METHODS
+    ]
+    rows.append([InlineKeyboardButton(text=CANCEL_BUTTON, callback_data=CANCEL_CALLBACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def cancel_kb() -> ReplyKeyboardMarkup:

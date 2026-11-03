@@ -54,6 +54,11 @@ def describe_order(order: Order) -> str:
     params = [param for param in params if param]
     if params:
         parts.append("печать " + ", ".join(params))
+    if order.delivery_method:
+        delivery = f"доставка {order.delivery_method}"
+        if order.pickup_point:
+            delivery += f", ПВЗ «{order.pickup_point}»"
+        parts.append(delivery)
     return "; ".join(parts) or "без деталей"
 
 

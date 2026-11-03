@@ -4,6 +4,10 @@ from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from zoneinfo import ZoneInfo
 
+# Описание бота на экране «Что умеет этот бот?» — его видят до нажатия «Старт».
+# Бот выставляет его при запуске. Лимит Telegram — 512 символов, без форматирования.
+BOT_DESCRIPTION = "Жми «Старт» 👇"
+
 # Время в БД хранится в UTC; клиенту показываем в этом часовом поясе.
 LOCAL_TIMEZONE = ZoneInfo("Europe/Minsk")
 
@@ -30,11 +34,11 @@ COLORS = ["Чёрный", "Белый", "Серый"]
 
 # Толщина слоя (мм) → цена за грамм пластика, BYN.
 LAYER_PRICES = {
-    "0.28": Decimal("0.30"),
-    "0.20": Decimal("0.30"),
-    "0.16": Decimal("0.37"),
-    "0.12": Decimal("0.51"),
-    "0.08": Decimal("0.67"),
+    "0.28": Decimal("0.20"),
+    "0.20": Decimal("0.20"),
+    "0.16": Decimal("0.27"),
+    "0.12": Decimal("0.41"),
+    "0.08": Decimal("0.57"),
 }
 
 # Пояснения для клиентов, которые не разбираются в 3D-печати (показываются курсивом на шаге выбора).
@@ -82,9 +86,16 @@ def calculate_print_price(weight: Decimal, layer_height: str, infill: int) -> Pr
     total = exact.quantize(PRICE_ROUNDING, rounding=ROUND_CEILING).quantize(Decimal("0.01"))
     return PriceCalc(weight, price_per_gram, print_cost, surcharge, exact, total)
 
-DELIVERY_METHODS = ["самовывоз", "европочта", "белпочта"]
+DELIVERY_METHODS = ["самовывоз", "европочта"]
+# Способ доставки, для которого клиент указывает адрес пункта выдачи.
+PICKUP_POINT_METHOD = "европочта"
 # Показывается в прайсе; пустая строка — адрес не выводится.
-PICKUP_ADDRESS = "Сурганова 37/2(общежитие 12)"
+PICKUP_ADDRESS = "Адрес договорной"
+
+
+def delivery_title(method: str) -> str:
+    # Не capitalize(): он переводит остальные буквы в нижний регистр.
+    return f"{method[:1].upper()}{method[1:]}"
 
 
 def price_info_text() -> str:

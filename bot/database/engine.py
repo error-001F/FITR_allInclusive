@@ -42,3 +42,7 @@ def _add_missing_columns(conn: Connection) -> None:
         )
     if "weight_grams" not in columns:
         conn.execute(text("ALTER TABLE orders ADD COLUMN weight_grams NUMERIC(8, 1)"))
+    if "delivery_method" not in columns:
+        conn.execute(text("ALTER TABLE orders ADD COLUMN delivery_method VARCHAR(16)"))
+    if "pickup_point" not in columns:
+        conn.execute(text("ALTER TABLE orders ADD COLUMN pickup_point VARCHAR(255)"))

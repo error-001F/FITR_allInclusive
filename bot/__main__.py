@@ -4,10 +4,11 @@ import logging
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramAPIError
 from aiogram.fsm.storage.memory import SimpleEventIsolation
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker
 
-from bot.catalog import CLEANUP_INTERVAL
+from bot.catalog import BOT_DESCRIPTION, CLEANUP_INTERVAL
 from bot.config import Settings, get_settings
 from bot.database.engine import create_engine, create_session_pool, init_db
 from bot.handlers import get_routers
@@ -68,6 +69,13 @@ async def main() -> None:
         token=settings.bot_token.get_secret_value(),
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
+    try:
+        # Telegram просто перезаписывает описание, поэтому выставляем его при каждом запуске.
+        await bot.set_my_description(BOT_DESCRIPTION)
+    except TelegramAPIError as error:
+        # Без описания бот работает, поэтому сбой не мешает запуску.
+        logger.warning("Не удалось обновить описание бота: %s", error)
+
     session_pool = create_session_pool(engine)
     dp = create_dispatcher(settings, session_pool)
     cleanup_task = asyncio.create_task(cleanup_rejected_orders(bot, dp, settings, session_pool))

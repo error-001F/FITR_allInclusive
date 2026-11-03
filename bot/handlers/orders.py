@@ -10,12 +10,15 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import (
     COLORS,
+    DELIVERY_METHODS,
     INFILL_HINT,
     INFILL_SURCHARGES,
     LAYER_HINT,
     LAYER_PRICES,
     MATERIALS,
+    PICKUP_POINT_METHOD,
     PRINT_EXTENSIONS,
+    delivery_title,
 )
 from bot.config import Settings
 from bot.database.models import OrderType
@@ -29,11 +32,13 @@ from bot.keyboards.orders import (
     EDIT_CONTACTS_CALLBACK,
     ORDER_TYPE_TITLES,
     SKIP_BUTTON,
+    DeliveryCallback,
     PrintOptionCallback,
     cancel_kb,
     color_kb,
     confirm_kb,
     contact_kb,
+    delivery_kb,
     infill_kb,
     layer_kb,
     material_kb,
@@ -55,6 +60,8 @@ NAME_WORD = r"[A-Za-zА-Яа-яЁё]+(?:[-'][A-Za-zА-Яа-яЁё]+)*"
 NAME_PATTERN = re.compile(rf"{NAME_WORD}(?: {NAME_WORD}){{1,3}}")
 MAX_NAME_LENGTH = 64  # длина колонки customer_name в БД
 MAX_REFERENCES = 10
+MIN_PICKUP_POINT_LENGTH = 5
+MAX_PICKUP_POINT_LENGTH = 255  # длина колонки pickup_point в БД
 PRINT_ACCEPTED_TEXT = (
     "Модель принята. Скоро я закину её в слайсер, рассчитаю точный вес "
     "и напишу итоговую сумму."
@@ -91,6 +98,9 @@ def format_order(data: dict[str, Any]) -> str:
         lines.append(f"Описание: {html.quote(data['description'])}")
         count = len(data.get("attachments", []))
         lines.append(f"Референсы: {count} шт." if count else "Референсы: нет")
+    lines.append(f"Доставка: {delivery_title(data['delivery_method'])}")
+    if data.get("pickup_point"):
+        lines.append(f"Адрес ПВЗ: {html.quote(data['pickup_point'])}")
     lines.append(f"ФИО: {html.quote(data['customer_name'])}")
     lines.append(f"Телефон: {html.quote(data['phone'])}")
     if order_type == OrderType.PRINT:
@@ -108,6 +118,11 @@ async def show_print_step(
     data = await state.get_data()
     progress = "\n".join(print_params_lines(data))
     await callback.message.edit_text(f"{progress}\n\n{prompt}", reply_markup=reply_markup)
+
+
+async def ask_delivery(message: Message, state: FSMContext) -> None:
+    await state.set_state(OrderForm.choosing_delivery)
+    await message.answer("Выберите способ доставки:", reply_markup=delivery_kb())
 
 
 async def ask_name(message: Message, state: FSMContext) -> None:
@@ -275,10 +290,9 @@ async def choose_color(
         await callback.answer("Такого варианта нет.", show_alert=True)
         return
     await state.update_data(color=callback_data.value)
-    # Убираем кнопки: параметры выбраны, дальше — контактные данные.
+    # Убираем кнопки: параметры выбраны, дальше — доставка.
     await show_print_step(callback, state, "Параметры печати выбраны.")
-    # callback.message отправлено ботом, поэтому id клиента берём из callback.from_user.
-    await ask_contacts(callback.message, state, session, callback.from_user.id)
+    await ask_delivery(callback.message, state)
     await callback.answer()
 
 
@@ -288,6 +302,7 @@ async def choose_color(
         OrderForm.choosing_layer,
         OrderForm.choosing_infill,
         OrderForm.choosing_color,
+        OrderForm.choosing_delivery,
     )
 )
 async def choose_with_buttons(message: Message) -> None:
@@ -366,11 +381,11 @@ async def receive_reference(message: Message, state: FSMContext) -> None:
 
 
 @router.message(OrderForm.waiting_references, F.text.in_({DONE_BUTTON, SKIP_BUTTON}))
-async def references_done(
-    message: Message, state: FSMContext, session: AsyncSession
-) -> None:
+async def references_done(message: Message, state: FSMContext) -> None:
     # «Готово» без файлов работает так же, как «Пропустить».
-    await ask_contacts(message, state, session, message.from_user.id)
+    # Меняем клавиатуру «Готово/Пропустить» на «Отмена», как в ветке печати.
+    await message.answer("Референсы приняты.", reply_markup=cancel_kb())
+    await ask_delivery(message, state)
 
 
 @router.message(OrderForm.waiting_references)
@@ -380,7 +395,53 @@ async def receive_reference_invalid(message: Message) -> None:
     )
 
 
-# --- Общие шаги: ФИО, телефон, подтверждение ---
+# --- Общие шаги: доставка, ФИО, телефон, подтверждение ---
+
+
+@router.callback_query(OrderForm.choosing_delivery, DeliveryCallback.filter())
+async def choose_delivery(
+    callback: CallbackQuery,
+    callback_data: DeliveryCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    method = callback_data.method
+    if method not in DELIVERY_METHODS:
+        await callback.answer("Такого варианта нет.", show_alert=True)
+        return
+    await state.update_data(delivery_method=method, pickup_point=None)
+    await callback.message.edit_text(f"Доставка: {delivery_title(method)}")
+    await callback.answer()
+
+    if method == PICKUP_POINT_METHOD:
+        await state.set_state(OrderForm.waiting_pickup_point)
+        await callback.message.answer(
+            "Напишите адрес пункта выдачи Европочты (город, улица, дом или номер ПВЗ).",
+            reply_markup=cancel_kb(),
+        )
+        return
+    # callback.message отправлено ботом, поэтому id клиента берём из callback.from_user.
+    await ask_contacts(callback.message, state, session, callback.from_user.id)
+
+
+@router.message(OrderForm.waiting_pickup_point, F.text)
+async def receive_pickup_point(
+    message: Message, state: FSMContext, session: AsyncSession
+) -> None:
+    address = " ".join(message.text.split())
+    if not MIN_PICKUP_POINT_LENGTH <= len(address) <= MAX_PICKUP_POINT_LENGTH:
+        await message.answer(
+            f"Напишите адрес ПВЗ: от {MIN_PICKUP_POINT_LENGTH} "
+            f"до {MAX_PICKUP_POINT_LENGTH} символов."
+        )
+        return
+    await state.update_data(pickup_point=address)
+    await ask_contacts(message, state, session, message.from_user.id)
+
+
+@router.message(OrderForm.waiting_pickup_point)
+async def receive_pickup_point_invalid(message: Message) -> None:
+    await message.answer("Напишите адрес ПВЗ текстовым сообщением.")
 
 
 @router.message(OrderForm.waiting_name, F.text)
@@ -470,6 +531,8 @@ async def confirm_order(
         description=data.get("description"),
         # Пустой список сохраняем как NULL: «референсов нет».
         attachments=data.get("attachments") or None,
+        delivery_method=data.get("delivery_method"),
+        pickup_point=data.get("pickup_point"),
     )
     log_event(order, f"создан клиентом: {describe_order(order)}")
 
@@ -487,6 +550,7 @@ async def confirm_order(
 
 
 @router.callback_query(PrintOptionCallback.filter())
+@router.callback_query(DeliveryCallback.filter())
 @router.callback_query(F.data.in_({CONFIRM_CALLBACK, EDIT_CONTACTS_CALLBACK}))
 async def stale_button(callback: CallbackQuery) -> None:
     await callback.answer("Эта кнопка уже неактуальна.")

@@ -50,6 +50,8 @@ async def create_order(
     color: str | None = None,
     description: str | None = None,
     attachments: list[dict[str, Any]] | None = None,
+    delivery_method: str | None = None,
+    pickup_point: str | None = None,
 ) -> Order:
     order = Order(
         user_id=user_id,
@@ -65,6 +67,8 @@ async def create_order(
         color=color,
         description=description,
         attachments=attachments,
+        delivery_method=delivery_method,
+        pickup_point=pickup_point,
     )
     session.add(order)
     await session.commit()
