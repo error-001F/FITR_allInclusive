@@ -11,8 +11,8 @@ ADMIN_SKIP_FILE_CALLBACK = "adm_skip_file"
 class AdminOrderCallback(CallbackData, prefix="adm"):
     """Кнопка карточки заказа у мастера, например adm:invoice:5."""
 
-    # invoice | invoice_ok | invoice_manual | invoice_weight | paid | ready | reject | params |
-    # issue | issue_confirm | issue_back | open
+    # invoice | invoice_ok | invoice_manual | invoice_weight | paid | pay_reject | print | ready |
+    # reject | params | issue | issue_confirm | issue_back | open
     action: str
     order_id: int
 
@@ -47,10 +47,22 @@ def admin_order_kb(order: Order) -> InlineKeyboardMarkup:
         ]
     elif status == OrderStatus.AWAITING_PAYMENT:
         rows = [
-            [_button("✅ Оплачен → в печать", "paid", order),
+            [_button("✅ Оплата получена", "paid", order),
              _button("💳 Изменить сумму", "invoice", order)],
             [_button("🛠 Параметры печати", "params", order),
              history_button(order)],
+            [_button("❌ Отклонить", "reject", order)],
+        ]
+    elif status == OrderStatus.PAYMENT_CHECK:
+        # Клиент прислал чек (он в «💬 Уточнить» → «📎 Вложения»); мастер сверяет поступление.
+        rows = [
+            [_button("✅ Оплата подтверждена", "paid", order),
+             _button("⚠️ Оплата не найдена", "pay_reject", order)],
+            [history_button(order), _button("❌ Отклонить", "reject", order)],
+        ]
+    elif status == OrderStatus.PAID:
+        rows = [
+            [_button("🖨 В печать", "print", order), history_button(order)],
             [_button("❌ Отклонить", "reject", order)],
         ]
     elif status == OrderStatus.PRINTING:

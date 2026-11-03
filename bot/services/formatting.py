@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from aiogram import html
 
-from bot.catalog import LOCAL_TIMEZONE, ORDER_STATUS_TITLES, delivery_title
+from bot.catalog import LOCAL_TIMEZONE, ORDER_STATUS_TITLES, PAYMENT_METHOD_TITLES, delivery_title
 from bot.database.models import Order
 from bot.keyboards.orders import ORDER_TYPE_TITLES
 
@@ -64,6 +64,9 @@ def order_details_lines(order: Order, description_limit: int | None = None) -> l
         lines.append(f"Вес: {format_weight(order.weight_grams)} г")
     if order.amount is not None:
         lines.append(f"Сумма: {order.amount} BYN")
+    if order.payment_method:
+        method = PAYMENT_METHOD_TITLES.get(order.payment_method, order.payment_method)
+        lines.append(f"Оплата: {method}")
     return lines
 
 

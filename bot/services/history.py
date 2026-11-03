@@ -59,6 +59,8 @@ def describe_order(order: Order) -> str:
         if order.pickup_point:
             delivery += f", ПВЗ «{order.pickup_point}»"
         parts.append(delivery)
+    if order.payment_method:
+        parts.append(f"оплата {order.payment_method}")
     return "; ".join(parts) or "без деталей"
 
 

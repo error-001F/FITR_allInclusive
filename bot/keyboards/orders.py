@@ -12,6 +12,7 @@ from bot.catalog import (
     INFILL_SURCHARGES,
     LAYER_PRICES,
     MATERIALS,
+    PAYMENT_METHOD_TITLES,
     delivery_title,
 )
 from bot.database.models import OrderType
@@ -39,6 +40,12 @@ class PrintOptionCallback(CallbackData, prefix="print"):
 
 class DeliveryCallback(CallbackData, prefix="delivery"):
     """Кнопка выбора способа доставки, например delivery:европочта."""
+
+    method: str
+
+
+class PaymentMethodCallback(CallbackData, prefix="paymethod"):
+    """Кнопка выбора способа оплаты при оформлении, например paymethod:card."""
 
     method: str
 
@@ -117,6 +124,21 @@ def delivery_kb() -> InlineKeyboardMarkup:
             )
         ]
         for method in DELIVERY_METHODS
+    ]
+    rows.append([InlineKeyboardButton(text=CANCEL_BUTTON, callback_data=CANCEL_CALLBACK)])
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def payment_method_kb(methods: list[str]) -> InlineKeyboardMarkup:
+    """methods — доступные способы (Settings.available_payment_methods)."""
+    rows = [
+        [
+            InlineKeyboardButton(
+                text=PAYMENT_METHOD_TITLES[method],
+                callback_data=PaymentMethodCallback(method=method).pack(),
+            )
+        ]
+        for method in methods
     ]
     rows.append([InlineKeyboardButton(text=CANCEL_BUTTON, callback_data=CANCEL_CALLBACK)])
     return InlineKeyboardMarkup(inline_keyboard=rows)

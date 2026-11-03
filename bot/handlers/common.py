@@ -5,7 +5,7 @@ from aiogram.types import LinkPreviewOptions, Message, ReplyKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import price_info_text
-from bot.database.models import Order
+from bot.database.models import Order, OrderStatus
 from bot.keyboards.menu import (
     CONTACT_MASTER_BUTTON,
     DESIGN_BUTTON,
@@ -16,6 +16,7 @@ from bot.keyboards.menu import (
     PRINT_BUTTON,
     main_menu_kb,
 )
+from bot.keyboards.payment import orders_pay_kb
 from bot.services.formatting import order_details_lines, order_header
 from bot.services.orders import list_user_orders
 
@@ -99,6 +100,7 @@ async def my_orders(message: Message, session: AsyncSession, state: FSMContext) 
         return
 
     blocks = "\n\n".join(format_order_line(order) for order in orders)
-    await message.answer(
-        f"Ваши последние заказы:\n\n{blocks}", reply_markup=await menu_if_idle(state)
-    )
+    unpaid = [order for order in orders if order.status == OrderStatus.AWAITING_PAYMENT]
+    # К сообщению нельзя приложить и inline-кнопки, и меню; меню у клиента и так на экране.
+    reply_markup = orders_pay_kb(unpaid) if unpaid else await menu_if_idle(state)
+    await message.answer(f"Ваши последние заказы:\n\n{blocks}", reply_markup=reply_markup)

@@ -52,6 +52,7 @@ async def create_order(
     attachments: list[dict[str, Any]] | None = None,
     delivery_method: str | None = None,
     pickup_point: str | None = None,
+    payment_method: str | None = None,
 ) -> Order:
     order = Order(
         user_id=user_id,
@@ -69,6 +70,7 @@ async def create_order(
         attachments=attachments,
         delivery_method=delivery_method,
         pickup_point=pickup_point,
+        payment_method=payment_method,
     )
     session.add(order)
     await session.commit()
@@ -89,6 +91,7 @@ async def update_order_status(
     allowed_from: set[OrderStatus],
     amount: Decimal | None = None,
     weight_grams: Decimal | None | object = ...,
+    payment_method: str | None = None,
 ) -> Order | None:
     """Меняет статус, только если текущий входит в allowed_from.
 
@@ -105,8 +108,22 @@ async def update_order_status(
         order.amount = amount
     if weight_grams is not ...:
         order.weight_grams = weight_grams
+    if payment_method is not None:
+        order.payment_method = payment_method
     if new_status == OrderStatus.REJECTED:
         order.rejected_at = utc_now()
+    await session.commit()
+    return order
+
+
+async def set_payment_method(
+    session: AsyncSession, order_id: int, method: str, allowed_from: set[OrderStatus]
+) -> Order | None:
+    """Клиент сменил способ оплаты. None — заказа нет или его статус уже другой."""
+    order = await session.get(Order, order_id)
+    if order is None or order.status not in allowed_from:
+        return None
+    order.payment_method = method
     await session.commit()
     return order
 

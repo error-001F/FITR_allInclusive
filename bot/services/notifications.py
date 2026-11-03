@@ -3,6 +3,7 @@ import logging
 
 from aiogram import Bot
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
+from aiogram.types import InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
@@ -109,11 +110,13 @@ async def close_admin_cards(
             logger.info("Карточка заказа №%s у %s не закрыта: %s", order.id, chat_id, error)
 
 
-async def notify_client(bot: Bot, order: Order, text: str) -> bool:
+async def notify_client(
+    bot: Bot, order: Order, text: str, reply_markup: InlineKeyboardMarkup | None = None
+) -> bool:
     """Сообщение клиенту. False — не доставлено (например, клиент заблокировал бота)."""
     try:
         # В личных чатах id чата совпадает с id пользователя.
-        await bot.send_message(order.user_id, text)
+        await bot.send_message(order.user_id, text, reply_markup=reply_markup)
     except DELIVERY_ERRORS as error:
         logger.warning("Не удалось написать клиенту по заказу №%s: %s", order.id, error)
         return False

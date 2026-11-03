@@ -11,6 +11,7 @@ from aiogram.types import CallbackQuery, Message, User
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import (
+    CASH,
     COLORS,
     INFILL_SURCHARGES,
     LAYER_PRICES,
@@ -36,6 +37,7 @@ from bot.keyboards.admin import (
 )
 from bot.keyboards.menu import CONTACT_MASTER_BUTTON, MY_ORDERS_BUTTON
 from bot.keyboards.orders import color_kb, infill_kb, layer_kb, material_kb
+from bot.keyboards.payment import pay_kb
 from bot.services.chat import count_messages
 from bot.services.formatting import format_weight, order_list_line
 from bot.services.history import describe_order, log_event
@@ -46,6 +48,7 @@ from bot.services.notifications import (
     refresh_admin_cards,
     send_admin_card,
 )
+from bot.services.payment import payment_message
 from bot.services.orders import (
     count_orders,
     delete_order,
@@ -75,11 +78,20 @@ MAX_TEXT_LENGTH = 1000
 
 # Из каких статусов допустимо каждое действие.
 INVOICE_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT}
-PAID_FROM = {OrderStatus.AWAITING_PAYMENT}
+# «Оплата получена» — и по чеку, и без него (клиент заплатил, но чек не прислал).
+PAID_FROM = {OrderStatus.AWAITING_PAYMENT, OrderStatus.PAYMENT_CHECK}
+PAY_REJECT_FROM = {OrderStatus.PAYMENT_CHECK}
+PRINT_FROM = {OrderStatus.PAID}
 READY_FROM = {OrderStatus.PRINTING}
-REJECT_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT, OrderStatus.PRINTING}
+REJECT_FROM = {
+    OrderStatus.NEW,
+    OrderStatus.AWAITING_PAYMENT,
+    OrderStatus.PAYMENT_CHECK,
+    OrderStatus.PAID,
+    OrderStatus.PRINTING,
+}
 # Заказы «в работе» для /orders без аргументов.
-ACTIVE_STATUSES = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT, OrderStatus.PRINTING}
+ACTIVE_STATUSES = REJECT_FROM
 # Сколько заказов показывать в /orders: 30 строк укладываются в лимит Telegram (4096 символов).
 ORDERS_LIST_LIMIT = 30
 # Параметры печати можно менять только до оплаты.
@@ -285,17 +297,65 @@ async def mark_paid(
     session: AsyncSession,
     bot: Bot,
 ) -> None:
+    order = await update_order_status(session, callback_data.order_id, OrderStatus.PAID, PAID_FROM)
+    if order is None:
+        await answer_stale(callback, session, await get_order(session, callback_data.order_id))
+        return
+    log_event(order, f"оплата подтверждена — мастер {master_name(callback.from_user)}")
+    await refresh_admin_cards(bot, session, order, pressed_card(callback))
+    delivered = await notify_client(
+        bot,
+        order,
+        f"Оплата по заказу №{order.id} подтверждена ✅ Скоро мастер возьмёт заказ в работу.",
+    )
+    await callback.answer("Статус: оплачен")
+    if not delivered:
+        await callback.message.answer(CLIENT_UNREACHABLE)
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "pay_reject"))
+async def payment_not_found(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    session: AsyncSession,
+    bot: Bot,
+) -> None:
     order = await update_order_status(
-        session, callback_data.order_id, OrderStatus.PRINTING, PAID_FROM
+        session, callback_data.order_id, OrderStatus.AWAITING_PAYMENT, PAY_REJECT_FROM
     )
     if order is None:
         await answer_stale(callback, session, await get_order(session, callback_data.order_id))
         return
-    log_event(order, f"оплачен, передан в работу — мастер {master_name(callback.from_user)}")
+    log_event(order, f"оплата не найдена, снова ждёт оплаты — мастер {master_name(callback.from_user)}")
     await refresh_admin_cards(bot, session, order, pressed_card(callback))
     delivered = await notify_client(
-        bot, order, f"Оплата по заказу №{order.id} получена. Заказ передан в работу 🖨"
+        bot,
+        order,
+        f"Мастер не нашёл оплату по заказу №{order.id}. Проверьте платёж и отправьте "
+        f"чек ещё раз. Если есть вопросы — нажмите «{CONTACT_MASTER_BUTTON}».",
+        reply_markup=pay_kb(order),
     )
+    await callback.answer("Статус: ожидает оплаты")
+    if not delivered:
+        await callback.message.answer(CLIENT_UNREACHABLE)
+
+
+@router.callback_query(AdminOrderCallback.filter(F.action == "print"))
+async def start_printing(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    session: AsyncSession,
+    bot: Bot,
+) -> None:
+    order = await update_order_status(
+        session, callback_data.order_id, OrderStatus.PRINTING, PRINT_FROM
+    )
+    if order is None:
+        await answer_stale(callback, session, await get_order(session, callback_data.order_id))
+        return
+    log_event(order, f"передан в печать — мастер {master_name(callback.from_user)}")
+    await refresh_admin_cards(bot, session, order, pressed_card(callback))
+    delivered = await notify_client(bot, order, f"Заказ №{order.id} передан в печать 🖨")
     await callback.answer("Статус: печатается")
     if not delivered:
         await callback.message.answer(CLIENT_UNREACHABLE)
@@ -319,6 +379,8 @@ async def mark_ready(
     text = f"Заказ №{order.id} готов к выдаче ✅"
     if PICKUP_ADDRESS:
         text += f"\nАдрес самовывоза: {html.quote(PICKUP_ADDRESS)}."
+    if order.payment_method == CASH:
+        text += f"\nОплата при получении: {html.bold(f'{order.amount} BYN')} наличными."
     text += "\nО способе получения договоритесь с мастером."
     delivered = await notify_client(bot, order, text)
     await callback.answer("Статус: готов к выдаче")
@@ -387,14 +449,20 @@ async def send_invoice(
     master: User,
     amount: Decimal,
 ) -> None:
-    """Выставляет счёт: статус «Ожидает оплаты», сумма клиенту, карточки, журнал."""
+    """Выставляет счёт: сумма и реквизиты клиенту, карточки, журнал.
+
+    Оплата картой или по IBAN — «Ожидает оплаты» до чека клиента. Наличными — этапа
+    оплаты нет: заказ сразу уходит в печать, клиент платит при получении.
+    """
     data = await state.get_data()
     await state.clear()
     weight = Decimal(data["weight"]) if data.get("weight") else None
+    current = await get_order(session, data["order_id"])
+    cash = current is not None and current.payment_method == CASH
     order = await update_order_status(
         session,
         data["order_id"],
-        OrderStatus.AWAITING_PAYMENT,
+        OrderStatus.PRINTING if cash else OrderStatus.AWAITING_PAYMENT,
         INVOICE_FROM,
         amount=amount,
         # Вес храним, если мастер его вводил (даже если сумму поставил свою).
@@ -417,32 +485,45 @@ async def send_invoice(
         )
     else:
         how = "сумма мастера"
-    log_event(order, f"счёт выставлен: {order.amount} BYN ({how}) — мастер {master_name(master)}")
+    paid_how = "оплата наличными при получении, сразу в печать" if cash else "ждёт оплаты"
+    log_event(
+        order,
+        f"счёт выставлен: {order.amount} BYN ({how}), {paid_how} — мастер {master_name(master)}",
+    )
 
-    if settings.payment_details:
-        payment = html.quote(settings.payment_details)
-    else:
-        logger.warning("PAYMENT_DETAILS не задан в .env — клиент получил счёт без реквизитов")
-        payment = "реквизиты мастер пришлёт отдельным сообщением."
     calc_line = ""
     if calc:
         calc_line = f"\nРасчёт: {format_weight(weight)} г × {calc.price_per_gram} BYN/г"
         if calc.surcharge:
             calc_line += f" + {calc.surcharge} BYN за заполнение"
-    delivered = await notify_client(
-        bot,
-        order,
-        f"Заказ №{order.id}: итоговая сумма {html.bold(f'{order.amount} BYN')}.{calc_line}\n\n"
-        f"Реквизиты для оплаты:\n{payment}\n\n"
-        "После оплаты мастер возьмёт заказ в работу.",
-    )
+    if cash:
+        delivered = await notify_client(
+            bot,
+            order,
+            f"Мастер проверил заказ №{order.id}: итоговая сумма "
+            f"{html.bold(f'{order.amount} BYN')}.{calc_line}\n\n"
+            "Оплата наличными при получении. Заказ передан в печать 🖨",
+        )
+    else:
+        requisites, kb = payment_message(order, settings)
+        delivered = await notify_client(
+            bot,
+            order,
+            f"Мастер проверил заказ №{order.id} и выставил счёт.{calc_line}\n\n{requisites}",
+            reply_markup=kb,
+        )
     await refresh_admin_cards(
         bot, session, order, (data["card_chat_id"], data["card_message_id"])
     )
-    if delivered:
-        await message.answer(f"Счёт по заказу №{order.id} на {order.amount} BYN отправлен клиенту.")
-    else:
+    if not delivered:
         await message.answer(CLIENT_UNREACHABLE)
+    elif cash:
+        await message.answer(
+            f"Заказ №{order.id} подтверждён на {order.amount} BYN: оплата наличными "
+            "при получении, заказ в печати."
+        )
+    else:
+        await message.answer(f"Счёт по заказу №{order.id} на {order.amount} BYN отправлен клиенту.")
 
 
 @router.message(AdminForm.waiting_reject_reason, F.text)

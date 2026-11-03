@@ -15,7 +15,9 @@ from bot.catalog import (
     INFILL_SURCHARGES,
     LAYER_HINT,
     LAYER_PRICES,
+    CASH,
     MATERIALS,
+    PAYMENT_METHOD_TITLES,
     PICKUP_POINT_METHOD,
     PRINT_EXTENSIONS,
     delivery_title,
@@ -33,6 +35,7 @@ from bot.keyboards.orders import (
     ORDER_TYPE_TITLES,
     SKIP_BUTTON,
     DeliveryCallback,
+    PaymentMethodCallback,
     PrintOptionCallback,
     cancel_kb,
     color_kb,
@@ -42,6 +45,7 @@ from bot.keyboards.orders import (
     infill_kb,
     layer_kb,
     material_kb,
+    payment_method_kb,
     references_kb,
 )
 from bot.services.history import describe_order, log_event
@@ -101,6 +105,7 @@ def format_order(data: dict[str, Any]) -> str:
     lines.append(f"Доставка: {delivery_title(data['delivery_method'])}")
     if data.get("pickup_point"):
         lines.append(f"Адрес ПВЗ: {html.quote(data['pickup_point'])}")
+    lines.append(f"Оплата: {PAYMENT_METHOD_TITLES[data['payment_method']]}")
     lines.append(f"ФИО: {html.quote(data['customer_name'])}")
     lines.append(f"Телефон: {html.quote(data['phone'])}")
     if order_type == OrderType.PRINT:
@@ -123,6 +128,15 @@ async def show_print_step(
 async def ask_delivery(message: Message, state: FSMContext) -> None:
     await state.set_state(OrderForm.choosing_delivery)
     await message.answer("Выберите способ доставки:", reply_markup=delivery_kb())
+
+
+async def ask_payment(message: Message, state: FSMContext, settings: Settings) -> None:
+    await state.set_state(OrderForm.choosing_payment)
+    await message.answer(
+        "Выберите способ оплаты. Реквизиты придут после того, как мастер проверит заказ "
+        "и выставит счёт.",
+        reply_markup=payment_method_kb(settings.available_payment_methods()),
+    )
 
 
 async def ask_name(message: Message, state: FSMContext) -> None:
@@ -303,6 +317,7 @@ async def choose_color(
         OrderForm.choosing_infill,
         OrderForm.choosing_color,
         OrderForm.choosing_delivery,
+        OrderForm.choosing_payment,
     )
 )
 async def choose_with_buttons(message: Message) -> None:
@@ -403,7 +418,7 @@ async def choose_delivery(
     callback: CallbackQuery,
     callback_data: DeliveryCallback,
     state: FSMContext,
-    session: AsyncSession,
+    settings: Settings,
 ) -> None:
     method = callback_data.method
     if method not in DELIVERY_METHODS:
@@ -420,14 +435,11 @@ async def choose_delivery(
             reply_markup=cancel_kb(),
         )
         return
-    # callback.message отправлено ботом, поэтому id клиента берём из callback.from_user.
-    await ask_contacts(callback.message, state, session, callback.from_user.id)
+    await ask_payment(callback.message, state, settings)
 
 
 @router.message(OrderForm.waiting_pickup_point, F.text)
-async def receive_pickup_point(
-    message: Message, state: FSMContext, session: AsyncSession
-) -> None:
+async def receive_pickup_point(message: Message, state: FSMContext, settings: Settings) -> None:
     address = " ".join(message.text.split())
     if not MIN_PICKUP_POINT_LENGTH <= len(address) <= MAX_PICKUP_POINT_LENGTH:
         await message.answer(
@@ -436,12 +448,35 @@ async def receive_pickup_point(
         )
         return
     await state.update_data(pickup_point=address)
-    await ask_contacts(message, state, session, message.from_user.id)
+    await ask_payment(message, state, settings)
 
 
 @router.message(OrderForm.waiting_pickup_point)
 async def receive_pickup_point_invalid(message: Message) -> None:
     await message.answer("Напишите адрес ПВЗ текстовым сообщением.")
+
+
+@router.callback_query(OrderForm.choosing_payment, PaymentMethodCallback.filter())
+async def choose_payment(
+    callback: CallbackQuery,
+    callback_data: PaymentMethodCallback,
+    state: FSMContext,
+    session: AsyncSession,
+    settings: Settings,
+) -> None:
+    method = callback_data.method
+    # Способ мог пропасть из .env, пока клиент оформлял заказ, а callback_data можно подделать.
+    if method not in settings.available_payment_methods():
+        await callback.answer("Такого варианта нет.", show_alert=True)
+        return
+    await state.update_data(payment_method=method)
+    text = f"Оплата: {PAYMENT_METHOD_TITLES[method]}"
+    if method == CASH:
+        text += "\nЗаказ уйдёт в печать сразу после подтверждения мастером, оплата — при получении."
+    await callback.message.edit_text(text)
+    await callback.answer()
+    # callback.message отправлено ботом, поэтому id клиента берём из callback.from_user.
+    await ask_contacts(callback.message, state, session, callback.from_user.id)
 
 
 @router.message(OrderForm.waiting_name, F.text)
@@ -533,6 +568,7 @@ async def confirm_order(
         attachments=data.get("attachments") or None,
         delivery_method=data.get("delivery_method"),
         pickup_point=data.get("pickup_point"),
+        payment_method=data.get("payment_method"),
     )
     log_event(order, f"создан клиентом: {describe_order(order)}")
 
@@ -551,6 +587,7 @@ async def confirm_order(
 
 @router.callback_query(PrintOptionCallback.filter())
 @router.callback_query(DeliveryCallback.filter())
+@router.callback_query(PaymentMethodCallback.filter())
 @router.callback_query(F.data.in_({CONFIRM_CALLBACK, EDIT_CONTACTS_CALLBACK}))
 async def stale_button(callback: CallbackQuery) -> None:
     await callback.answer("Эта кнопка уже неактуальна.")

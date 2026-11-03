@@ -14,6 +14,7 @@ class OrderForm(StatesGroup):
     # Общие шаги.
     choosing_delivery = State()
     waiting_pickup_point = State()  # только для Европочты
+    choosing_payment = State()
     waiting_name = State()
     waiting_contact = State()
     confirming = State()
@@ -31,6 +32,10 @@ class AdminForm(StatesGroup):
     choosing_infill = State()
     choosing_color = State()
     waiting_model_file = State()
+
+
+class PaymentForm(StatesGroup):
+    waiting_proof = State()  # клиент присылает чек; данные: order_id
 
 
 class ChatForm(StatesGroup):

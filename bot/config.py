@@ -26,7 +26,10 @@ class Settings(BaseSettings):
         default_factory=list, validation_alias=AliasChoices("ADMIN_IDS", "ADMIN_ID")
     )
     master_username: str | None = None
-    payment_details: str = ""
+    # Реквизиты для оплаты. Пустое значение — этот способ клиенту не предлагается.
+    payment_card: str = ""
+    payment_iban: str = ""
+    payment_recipient: str = ""  # получатель (ФИО, банк) — показывается под реквизитами
 
     @field_validator("admin_ids", mode="before")
     @classmethod
@@ -38,6 +41,16 @@ class Settings(BaseSettings):
         if isinstance(value, int):
             return [value]
         return value
+
+
+    def available_payment_methods(self) -> list[str]:
+        """Способы оплаты в порядке PAYMENT_METHOD_TITLES: карта и IBAN — если заданы реквизиты."""
+        details = {"card": self.payment_card, "iban": self.payment_iban}
+        return [method for method in ("card", "iban", "cash") if method == "cash" or details[method]]
+
+    def payment_value(self, method: str) -> str:
+        """Номер карты или IBAN для способа оплаты; для наличных — пустая строка."""
+        return {"card": self.payment_card, "iban": self.payment_iban}.get(method, "")
 
 
 @lru_cache

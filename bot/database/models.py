@@ -18,8 +18,10 @@ class OrderType(StrEnum):
 
 class OrderStatus(StrEnum):
     NEW = "new"  # оформлен клиентом, ждёт оценки мастера
-    AWAITING_PAYMENT = "awaiting_payment"  # мастер выставил счёт
-    PRINTING = "printing"  # оплачен, в работе
+    AWAITING_PAYMENT = "awaiting_payment"  # мастер выставил счёт, ждём чек от клиента
+    PAYMENT_CHECK = "payment_check"  # клиент прислал чек, мастер проверяет оплату
+    PAID = "paid"  # мастер подтвердил оплату
+    PRINTING = "printing"  # в работе (при оплате наличными — сразу после счёта)
     READY = "ready"  # готов к выдаче
     REJECTED = "rejected"  # отклонён мастером
 
@@ -45,6 +47,8 @@ class Order(Base):
     # Способ доставки (из DELIVERY_METHODS) и адрес ПВЗ для Европочты; у старых заказов — NULL.
     delivery_method: Mapped[str | None] = mapped_column(String(16))
     pickup_point: Mapped[str | None] = mapped_column(String(255))
+    # Способ оплаты: card | iban | cash (ключи PAYMENT_METHOD_TITLES); у старых заказов — NULL.
+    payment_method: Mapped[str | None] = mapped_column(String(8))
     customer_name: Mapped[str] = mapped_column(String(64))
     phone: Mapped[str] = mapped_column(String(32))
     status: Mapped[str] = mapped_column(String(16), default=OrderStatus.NEW)
