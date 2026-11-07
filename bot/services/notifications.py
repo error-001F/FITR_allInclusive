@@ -31,13 +31,23 @@ async def send_order_files(bot: Bot, chat_id: int, order: Order) -> None:
 
 
 async def send_admin_card(
-    bot: Bot, session: AsyncSession, chat_id: int, order: Order, title: str = ""
+    bot: Bot,
+    session: AsyncSession,
+    chat_id: int,
+    order: Order,
+    title: str = "",
+    reply_markup: InlineKeyboardMarkup | None = None,
+    with_files: bool = True,
 ) -> None:
-    """Карточка + файлы мастеру. Карточку запоминаем, чтобы потом обновлять её у всех."""
+    """Карточка + файлы мастеру. Карточку запоминаем, чтобы потом обновлять её у всех.
+
+    reply_markup — другие кнопки вместо обычных (например, сразу подтверждение выдачи).
+    """
     text = f"{title}\n\n{admin_card_text(order)}" if title else admin_card_text(order)
-    card = await bot.send_message(chat_id, text, reply_markup=admin_order_kb(order))
+    card = await bot.send_message(chat_id, text, reply_markup=reply_markup or admin_order_kb(order))
     await save_admin_card(session, order.id, card.chat.id, card.message_id)
-    await send_order_files(bot, chat_id, order)
+    if with_files:
+        await send_order_files(bot, chat_id, order)
 
 
 async def notify_admins_new_order(

@@ -12,7 +12,7 @@ class AdminOrderCallback(CallbackData, prefix="adm"):
     """Кнопка карточки заказа у мастера, например adm:invoice:5."""
 
     # invoice | invoice_ok | invoice_manual | invoice_weight | paid | pay_reject | print | ready |
-    # reject | params | issue | issue_confirm | issue_back | open
+    # reject | params | issue | issue_ask (из /orders) | issue_confirm | issue_back | open
     action: str
     order_id: int
 
@@ -91,12 +91,15 @@ def issue_confirm_kb(order: Order) -> InlineKeyboardMarkup:
 
 
 def orders_list_kb(orders: list[Order], chat_counts: dict[int, int]) -> InlineKeyboardMarkup:
-    """Под списком /orders строка на заказ: [📋 №N] — карточка, [💬 Уточнить №N (k)] —
-    история переписки, k — сколько в ней сообщений."""
-    rows = [
-        [_button(f"📋 №{order.id}", "open", order), history_button(order, chat_counts.get(order.id, 0))]
-        for order in orders
-    ]
+    """Под списком /orders строка на заказ: [📋 №N] — карточка, [📬 Выдать №N] — только у
+    готовых к выдаче, [💬 Уточнить №N (k)] — история переписки, k — сколько в ней сообщений."""
+    rows = []
+    for order in orders:
+        row = [_button(f"📋 №{order.id}", "open", order)]
+        if order.status == OrderStatus.READY:
+            row.append(_button(f"📬 Выдать №{order.id}", "issue_ask", order))
+        row.append(history_button(order, chat_counts.get(order.id, 0)))
+        rows.append(row)
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

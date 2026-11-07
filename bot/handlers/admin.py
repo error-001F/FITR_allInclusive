@@ -91,7 +91,8 @@ REJECT_FROM = {
     OrderStatus.PRINTING,
 }
 # Заказы «в работе» для /orders без аргументов.
-ACTIVE_STATUSES = REJECT_FROM
+# Готовые к выдаче тоже «в работе»: их ещё нужно выдать (кнопка 📬 прямо в списке).
+ACTIVE_STATUSES = REJECT_FROM | {OrderStatus.READY}
 # Сколько заказов показывать в /orders: 30 строк укладываются в лимит Telegram (4096 символов).
 ORDERS_LIST_LIMIT = 30
 # Параметры печати можно менять только до оплаты.
@@ -850,6 +851,30 @@ async def issue_confirm(
     await renumber_after_delete(bot, session, fsm_storage, settings, {order.id})
 
 
+@router.callback_query(AdminOrderCallback.filter(F.action == "issue_ask"))
+async def issue_from_list(
+    callback: CallbackQuery, callback_data: AdminOrderCallback, session: AsyncSession, bot: Bot
+) -> None:
+    """[📬 Выдать №N] из /orders: присылаем свежую карточку сразу с подтверждением.
+
+    Клавиатуру самого списка не трогаем — в ней кнопки других заказов. Присланная карточка —
+    обычная (запоминается в admin_cards), поэтому дальше работают issue_confirm / issue_back.
+    """
+    order = await get_order(session, callback_data.order_id)
+    if order is None or order.status != OrderStatus.READY:
+        # Номер в старом списке мог уже достаться другому заказу — ничего не делаем.
+        await callback.answer(
+            "Заказ уже выдан или его статус изменился — обновите список: /orders", show_alert=True
+        )
+        return
+    await send_admin_card(
+        bot, session, callback.message.chat.id, order,
+        title="📬 Подтвердите выдачу — заказ будет удалён из базы.",
+        reply_markup=issue_confirm_kb(order), with_files=False,
+    )
+    await callback.answer()
+
+
 # --- Список заказов ---
 
 
@@ -873,7 +898,7 @@ async def cmd_orders(message: Message, command: CommandObject, session: AsyncSes
     shown = f"\n\nПоказаны последние {len(orders)} из {total}." if total > len(orders) else ""
     await message.answer(
         f"{html.bold(title)} (новые сверху):\n\n{lines}{shown}\n\n"
-        "📋 — карточка заказа, 💬 — переписка с клиентом.",
+        "📋 — карточка заказа, 📬 — выдать готовый заказ, 💬 — переписка с клиентом.",
         reply_markup=orders_list_kb(orders, chat_counts),
     )
 
