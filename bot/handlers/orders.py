@@ -49,6 +49,7 @@ from bot.keyboards.orders import (
     references_kb,
 )
 from bot.services.history import describe_order, log_event
+from bot.services.model_files import check_model_file
 from bot.services.notifications import notify_admins_new_order
 from bot.services.orders import create_order, get_last_contacts
 from bot.states import OrderForm
@@ -56,6 +57,10 @@ from bot.states import OrderForm
 router = Router(name="orders")
 
 EXTENSIONS_TEXT = ", ".join(PRINT_EXTENSIONS)
+BAD_MODEL_FILE_TEXT = (
+    "Файл не похож на модель STL или STEP — возможно, он повреждён или это другой формат "
+    "с изменённым расширением. Экспортируйте модель заново и пришлите файл."
+)
 MIN_DESCRIPTION_LENGTH = 20
 # Запас до лимита Telegram в 4096 символов: описание целиком попадает в сводку заказа.
 MAX_DESCRIPTION_LENGTH = 3000
@@ -219,10 +224,13 @@ async def start_design_order(message: Message, state: FSMContext) -> None:
 
 
 @router.message(OrderForm.waiting_file, F.document)
-async def receive_file(message: Message, state: FSMContext) -> None:
+async def receive_file(message: Message, state: FSMContext, bot: Bot) -> None:
     file_name = message.document.file_name or ""
     if Path(file_name).suffix.lower() not in PRINT_EXTENSIONS:
         await message.answer(f"Нужен файл модели с расширением {EXTENSIONS_TEXT}.")
+        return
+    if not await check_model_file(bot, message.document):
+        await message.answer(BAD_MODEL_FILE_TEXT)
         return
 
     await state.update_data(file_id=message.document.file_id, file_name=file_name)

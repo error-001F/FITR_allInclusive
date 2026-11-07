@@ -23,6 +23,7 @@ from bot.catalog import (
 from bot.config import Settings
 from bot.database.models import Order, OrderStatus
 from bot.handlers.orders import (
+    BAD_MODEL_FILE_TEXT,
     MAX_DESCRIPTION_LENGTH,
     MAX_NAME_LENGTH,
     MAX_PICKUP_POINT_LENGTH,
@@ -54,6 +55,7 @@ from bot.keyboards.orders import (
 )
 from bot.services.formatting import order_details_lines
 from bot.services.history import log_event
+from bot.services.model_files import check_model_file
 from bot.services.notifications import notify_admins_order_changed
 from bot.services.orders import get_order, update_client_order
 from bot.states import EditForm
@@ -390,6 +392,9 @@ async def edit_file(
     file_name = message.document.file_name or ""
     if Path(file_name).suffix.lower() not in PRINT_EXTENSIONS:
         await message.answer(f"Нужен файл модели с расширением {EXTENSIONS_TEXT}.")
+        return
+    if not await check_model_file(bot, message.document):
+        await message.answer(BAD_MODEL_FILE_TEXT)
         return
     await save_changes(
         message, state, session, bot, settings, message.from_user,
