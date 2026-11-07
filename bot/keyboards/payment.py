@@ -1,7 +1,8 @@
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import CopyTextButton, InlineKeyboardButton, InlineKeyboardMarkup
 
-from bot.database.models import Order
+from bot.database.models import Order, OrderStatus
+from bot.keyboards.edit import edit_button
 
 COPY_LABELS = {"card": "📋 Скопировать номер карты", "iban": "📋 Скопировать IBAN"}
 SWITCH_LABELS = {"card": "🔄 Оплатить картой", "iban": "🔄 Оплатить по IBAN"}
@@ -32,9 +33,16 @@ def pay_kb(order: Order) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[[pay_button(order)]])
 
 
-def orders_pay_kb(orders: list[Order]) -> InlineKeyboardMarkup:
-    """Под списком «Мои заказы»: кнопка оплаты для каждого неоплаченного заказа."""
-    return InlineKeyboardMarkup(inline_keyboard=[[pay_button(order)] for order in orders])
+def my_orders_kb(orders: list[Order]) -> InlineKeyboardMarkup | None:
+    """Под списком «Мои заказы»: [💳 Оплатить №N] для неоплаченных и [✏️ Изменить №N] для
+    заказов, по которым мастер ещё не выставил счёт. None — кнопок нет."""
+    rows = []
+    for order in orders:
+        if order.status == OrderStatus.AWAITING_PAYMENT:
+            rows.append([pay_button(order)])
+        elif order.status == OrderStatus.NEW:
+            rows.append([edit_button(order)])
+    return InlineKeyboardMarkup(inline_keyboard=rows) if rows else None
 
 
 def requisites_kb(

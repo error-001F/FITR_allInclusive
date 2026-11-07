@@ -24,7 +24,7 @@ from bot.catalog import (
 )
 from bot.config import Settings
 from bot.database.models import OrderType
-from bot.keyboards.menu import DESIGN_TEXTS, PRINT_TEXTS, main_menu_kb
+from bot.keyboards.menu import DESIGN_TEXTS, MY_ORDERS_BUTTON, PRINT_TEXTS, main_menu_kb
 from bot.keyboards.orders import (
     CANCEL_BUTTON,
     CANCEL_CALLBACK,
@@ -71,6 +71,10 @@ PRINT_ACCEPTED_TEXT = (
     "и напишу итоговую сумму."
 )
 DESIGN_ACCEPTED_TEXT = "ТЗ отправлено. Мастер скоро свяжется для оценки сложности."
+EDIT_HINT = (
+    "✏️ Пока мастер не выставил счёт, заказ можно изменить в разделе "
+    f"«{MY_ORDERS_BUTTON}» — мастер получит уведомление."
+)
 
 
 def infill_text(infill: int) -> str:
@@ -579,7 +583,7 @@ async def confirm_order(
         final_text = PRINT_ACCEPTED_TEXT
     else:
         final_text = DESIGN_ACCEPTED_TEXT
-    await callback.message.answer(final_text, reply_markup=main_menu_kb())
+    await callback.message.answer(f"{final_text}\n\n{EDIT_HINT}", reply_markup=main_menu_kb())
     await callback.answer()
     # Мастера уведомляем после ответа клиенту: сбой отправки мастеру его не затронет.
     await notify_admins_new_order(bot, session, settings, order)

@@ -1,14 +1,14 @@
 """Отправка сообщений мастерам и клиенту с обработкой ошибок Telegram."""
 import logging
 
-from aiogram import Bot
+from aiogram import Bot, html
 from aiogram.exceptions import TelegramBadRequest, TelegramForbiddenError
-from aiogram.types import InlineKeyboardMarkup
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.config import Settings
 from bot.database.models import Order
-from bot.keyboards.admin import admin_order_kb
+from bot.keyboards.admin import AdminOrderCallback, admin_order_kb
 from bot.services.formatting import admin_card_text
 from bot.services.orders import list_admin_cards, save_admin_card
 
@@ -108,6 +108,40 @@ async def close_admin_cards(
             await bot.edit_message_text(text=text, chat_id=chat_id, message_id=message_id)
         except DELIVERY_ERRORS as error:
             logger.info("Карточка заказа №%s у %s не закрыта: %s", order.id, chat_id, error)
+
+
+async def notify_admins_order_changed(
+    bot: Bot,
+    session: AsyncSession,
+    settings: Settings,
+    order: Order,
+    change_lines: list[str],
+    new_files: list[dict] = (),
+) -> None:
+    """Клиент изменил заказ: всем мастерам «было → стало» + кнопка карточки, новые файлы
+    следом; сохранённые карточки у всех обновляются. Ошибка у одного мастера не мешает другим."""
+    text = (
+        f"✏️ Клиент изменил заказ №{order.id} ({html.quote(order.customer_name)}):\n"
+        + "\n".join(f"• {line}" for line in change_lines)
+    )
+    card_kb = InlineKeyboardMarkup(inline_keyboard=[[
+        InlineKeyboardButton(
+            text="📋 Карточка",
+            callback_data=AdminOrderCallback(action="open", order_id=order.id).pack(),
+        )
+    ]])
+    for admin_id in settings.admin_ids:
+        try:
+            await bot.send_message(admin_id, text, reply_markup=card_kb)
+            for item in new_files:
+                caption = f"Заказ №{order.id}: новый файл от клиента"
+                if item.get("kind") == "photo":
+                    await bot.send_photo(admin_id, item["file_id"], caption=caption)
+                else:
+                    await bot.send_document(admin_id, item["file_id"], caption=caption)
+        except DELIVERY_ERRORS as error:
+            logger.warning("Мастер %s не получил изменения заказа №%s: %s", admin_id, order.id, error)
+    await refresh_admin_cards(bot, session, order)
 
 
 async def notify_client(

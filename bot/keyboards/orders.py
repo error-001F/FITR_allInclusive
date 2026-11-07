@@ -82,6 +82,10 @@ def _options_kb(
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+# Публичное имя: клавиатуры вариантов строят и другие модули (редактирование заказа).
+options_kb = _options_kb
+
+
 def material_kb(
     callback: OptionCallback = PrintOptionCallback, cancel: str = CANCEL_CALLBACK
 ) -> InlineKeyboardMarkup:

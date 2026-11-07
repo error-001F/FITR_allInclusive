@@ -241,3 +241,35 @@ async def list_admin_cards(session: AsyncSession, order_id: int) -> list[AdminCa
 def utc_now() -> datetime:
     # Время в БД храним в UTC без часового пояса — так же, как created_at от SQLite.
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def update_client_order(
+    session: AsyncSession,
+    order_id: int,
+    user_id: int,
+    created_at: str,
+    fields: dict[str, Any],
+) -> tuple[Order, list[tuple[str, Any, Any]]] | None:
+    """Клиент меняет поля своего заказа. Возвращает заказ и список (поле, было, стало)
+    только для реально изменившихся полей.
+
+    None — менять нельзя: заказ не этого клиента, мастер уже выставил счёт, или под этим
+    номером теперь другой заказ (номера сдвигаются после удалений — сверяем дату создания).
+    """
+    order = await session.get(Order, order_id)
+    if (
+        order is None
+        or order.user_id != user_id
+        or order.status != OrderStatus.NEW
+        or order.created_at.isoformat() != created_at
+    ):
+        return None
+    changes = []
+    for attr, value in fields.items():
+        old = getattr(order, attr)
+        if old != value:
+            changes.append((attr, old, value))
+            setattr(order, attr, value)
+    if changes:
+        await session.commit()
+    return order, changes

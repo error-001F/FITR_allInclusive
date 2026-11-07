@@ -42,3 +42,14 @@ class ChatForm(StatesGroup):
     # Одно сообщение — одно нажатие кнопки; после отправки состояние сбрасывается.
     client_message = State()  # данные: order_id (0 — общий вопрос), master_id (кому ответ) или None
     master_message = State()  # данные: order_id, client_id
+
+
+class EditForm(StatesGroup):
+    # Клиент меняет одно поле своего заказа; данные: order_id, order_created_at, field.
+    choosing_option = State()  # материал, слой, заполнение, цвет, доставка, оплата — кнопками
+    waiting_pickup_point = State()  # после выбора Европочты; данные: + pending_delivery
+    waiting_file = State()
+    waiting_description = State()
+    waiting_references = State()  # данные: + attachments, last_album_id
+    waiting_name = State()
+    waiting_contact = State()
