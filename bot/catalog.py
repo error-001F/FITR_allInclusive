@@ -4,10 +4,6 @@ from datetime import timedelta
 from decimal import ROUND_CEILING, Decimal
 from zoneinfo import ZoneInfo
 
-# Описание бота на экране «Что умеет этот бот?» — его видят до нажатия «Старт».
-# Бот выставляет его при запуске. Лимит Telegram — 512 символов, без форматирования.
-BOT_DESCRIPTION = "Жми «Старт» 👇"
-
 # Время в БД хранится в UTC; клиенту показываем в этом часовом поясе.
 LOCAL_TIMEZONE = ZoneInfo("Europe/Minsk")
 
@@ -15,21 +11,10 @@ LOCAL_TIMEZONE = ZoneInfo("Europe/Minsk")
 ORDER_STATUS_TITLES = {
     "new": "🆕 Принят, ждёт оценки мастера",
     "awaiting_payment": "💳 Ожидает оплаты",
-    "payment_check": "🔎 Оплата на проверке",
-    "paid": "💰 Оплачен",
     "printing": "🖨 Печатается",
     "ready": "✅ Готов к выдаче",
     "rejected": "❌ Отклонён",
 }
-
-# Способ оплаты (ключ хранится в БД) → как его видит клиент. Реквизиты карты и IBAN — в .env;
-# способ без реквизитов клиенту не предлагается.
-PAYMENT_METHOD_TITLES = {
-    "card": "💳 Картой",
-    "iban": "🏦 По IBAN",
-    "cash": "💵 Наличными при получении",
-}
-CASH = "cash"
 
 # Сколько хранить отклонённые заказы, и как часто бот проверяет, не пора ли их удалить.
 REJECTED_ORDER_TTL = timedelta(days=1)
@@ -98,15 +83,8 @@ def calculate_print_price(weight: Decimal, layer_height: str, infill: int) -> Pr
     return PriceCalc(weight, price_per_gram, print_cost, surcharge, exact, total)
 
 DELIVERY_METHODS = ["самовывоз", "европочта"]
-# Способ доставки, для которого клиент указывает адрес пункта выдачи.
-PICKUP_POINT_METHOD = "европочта"
 # Показывается в прайсе; пустая строка — адрес не выводится.
 PICKUP_ADDRESS = "Адрес договорной"
-
-
-def delivery_title(method: str) -> str:
-    # Не capitalize(): он переводит остальные буквы в нижний регистр.
-    return f"{method[:1].upper()}{method[1:]}"
 
 
 def price_info_text() -> str:
