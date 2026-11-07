@@ -140,7 +140,7 @@ PAYMENT_RECIPIENT=Иванов Иван Иванович, ОАО «Банк»
 
 ```bash
 tail -n 50 data/orders_history.log        # последние 50 событий
-grep "Серов" data/orders_history.log      # всё по клиенту
+grep "Иванов" data/orders_history.log      # всё по клиенту
 grep "| №3 |" data/orders_history.log     # всё, что происходило под номером 3
 ```
 
