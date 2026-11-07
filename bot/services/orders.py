@@ -5,6 +5,7 @@ from typing import Any
 from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from bot.catalog import SELF_PICKUP_METHOD
 from bot.database.models import AdminCard, ChatMessage, Order, OrderStatus, OrderType
 
 
@@ -82,6 +83,20 @@ async def create_order(
 
 async def get_order(session: AsyncSession, order_id: int) -> Order | None:
     return await session.get(Order, order_id)
+
+
+async def set_pickup_address(session: AsyncSession, order_id: int, address: str) -> Order | None:
+    """Мастер вписал адрес самовывоза. None — заказа нет, он отклонён или доставка уже другая."""
+    order = await session.get(Order, order_id)
+    if (
+        order is None
+        or order.delivery_method != SELF_PICKUP_METHOD
+        or order.status == OrderStatus.REJECTED
+    ):
+        return None
+    order.pickup_point = address
+    await session.commit()
+    return order
 
 
 async def update_order_status(

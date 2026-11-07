@@ -337,7 +337,12 @@ async def option_chosen(
             )
             await callback.answer()
             return
-        fields = {"delivery_method": value, "pickup_point": None}
+        fields = {"delivery_method": value}
+        order = await get_order(session, (await state.get_data())["order_id"])
+        if order is not None and order.delivery_method != value:
+            # При смене способа старый адрес не подходит (ПВЗ Европочты ≠ адрес самовывоза).
+            # Повторный выбор того же самовывоза адрес, вписанный мастером, не стирает.
+            fields["pickup_point"] = None
     if fields is None:
         await callback.answer("Такого варианта нет.", show_alert=True)
         return

@@ -100,8 +100,19 @@ def calculate_print_price(weight: Decimal, layer_height: str, infill: int) -> Pr
 DELIVERY_METHODS = ["самовывоз", "европочта"]
 # Способ доставки, для которого клиент указывает адрес пункта выдачи.
 PICKUP_POINT_METHOD = "европочта"
+# Способ доставки, для которого адрес вписывает мастер (кнопка «📍 Адрес самовывоза»).
+SELF_PICKUP_METHOD = "самовывоз"
 # Показывается в прайсе; пустая строка — адрес не выводится.
 PICKUP_ADDRESS = "Адрес договорной"
+
+
+def delivery_text(method: str, address: str | None) -> str:
+    """«Самовывоз, адрес: …» / «Европочта, ПВЗ: …» — без HTML, экранирует вызывающий."""
+    text = delivery_title(method)
+    if address:
+        label = "адрес" if method == SELF_PICKUP_METHOD else "ПВЗ"
+        text += f", {label}: {address}"
+    return text
 
 
 def delivery_title(method: str) -> str:

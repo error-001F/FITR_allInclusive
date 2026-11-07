@@ -4,7 +4,7 @@ from decimal import Decimal
 
 from aiogram import html
 
-from bot.catalog import LOCAL_TIMEZONE, ORDER_STATUS_TITLES, PAYMENT_METHOD_TITLES, delivery_title
+from bot.catalog import LOCAL_TIMEZONE, ORDER_STATUS_TITLES, PAYMENT_METHOD_TITLES, delivery_text
 from bot.database.models import Order
 from bot.keyboards.orders import ORDER_TYPE_TITLES
 
@@ -53,10 +53,8 @@ def order_details_lines(order: Order, description_limit: int | None = None) -> l
     if print_params:
         lines.append(f"Печать: {', '.join(print_params)}")
     if order.delivery_method:
-        delivery = delivery_title(order.delivery_method)
-        if order.pickup_point:
-            delivery += f", ПВЗ: {html.quote(order.pickup_point)}"
-        lines.append(f"Доставка: {delivery}")
+        delivery = delivery_text(order.delivery_method, order.pickup_point)
+        lines.append(f"Доставка: {html.quote(delivery)}")
 
     # Неизвестный статус (если появится новый) показываем как есть, а не падаем.
     lines.append(f"Статус: {ORDER_STATUS_TITLES.get(order.status, order.status)}")

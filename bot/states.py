@@ -26,6 +26,7 @@ class AdminForm(StatesGroup):
     confirming_amount = State()  # мастер подтверждает расчёт или вводит свою сумму
     waiting_amount = State()
     waiting_reject_reason = State()
+    waiting_pickup_address = State()  # адрес самовывоза
     # Мастер задаёт параметры печати (этап 5б); выбранное копится в данных FSM.
     choosing_material = State()
     choosing_layer = State()

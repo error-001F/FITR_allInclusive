@@ -6,6 +6,7 @@
 import logging
 from pathlib import Path
 
+from bot.catalog import SELF_PICKUP_METHOD
 from bot.database.models import Order
 
 history_logger = logging.getLogger("orders_history")
@@ -57,7 +58,8 @@ def describe_order(order: Order) -> str:
     if order.delivery_method:
         delivery = f"доставка {order.delivery_method}"
         if order.pickup_point:
-            delivery += f", ПВЗ «{order.pickup_point}»"
+            label = "адрес" if order.delivery_method == SELF_PICKUP_METHOD else "ПВЗ"
+            delivery += f", {label} «{order.pickup_point}»"
         parts.append(delivery)
     if order.payment_method:
         parts.append(f"оплата {order.payment_method}")

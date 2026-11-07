@@ -1,6 +1,7 @@
 from aiogram.filters.callback_data import CallbackData
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
+from bot.catalog import SELF_PICKUP_METHOD
 from bot.database.models import Order, OrderStatus
 from bot.keyboards.chat import history_button
 
@@ -12,7 +13,7 @@ class AdminOrderCallback(CallbackData, prefix="adm"):
     """Кнопка карточки заказа у мастера, например adm:invoice:5."""
 
     # invoice | invoice_ok | invoice_manual | invoice_weight | paid | pay_reject | print | ready |
-    # reject | params | issue | issue_ask (из /orders) | issue_confirm | issue_back | open
+    # reject | params | pickup | issue | issue_ask (из /orders) | issue_confirm | issue_back | open
     action: str
     order_id: int
 
@@ -77,6 +78,8 @@ def admin_order_kb(order: Order) -> InlineKeyboardMarkup:
     else:
         # rejected — заказ удалится через сутки, но написать клиенту ещё можно.
         rows = [[history_button(order)]]
+    if order.delivery_method == SELF_PICKUP_METHOD and status != OrderStatus.REJECTED:
+        rows.append([_button("📍 Адрес самовывоза", "pickup", order)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

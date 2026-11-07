@@ -19,6 +19,7 @@ from bot.catalog import (
     MAX_WEIGHT_GRAMS,
     PICKUP_ADDRESS,
     PRINT_EXTENSIONS,
+    SELF_PICKUP_METHOD,
     PriceCalc,
     calculate_print_price,
 )
@@ -54,6 +55,7 @@ from bot.services.orders import (
     delete_order,
     get_order,
     list_orders,
+    set_pickup_address,
     update_order_status,
     update_print_params,
 )
@@ -75,6 +77,8 @@ router.callback_query.filter(IsAdmin())
 
 MAX_AMOUNT = Decimal("100000")
 MAX_TEXT_LENGTH = 1000
+MIN_PICKUP_ADDRESS_LENGTH = 5
+MAX_PICKUP_ADDRESS_LENGTH = 255  # длина колонки pickup_point
 
 # Из каких статусов допустимо каждое действие.
 INVOICE_FROM = {OrderStatus.NEW, OrderStatus.AWAITING_PAYMENT}
@@ -291,6 +295,32 @@ async def reject_start(
     )
 
 
+@router.callback_query(AdminOrderCallback.filter(F.action == "pickup"))
+async def pickup_start(
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    state: FSMContext,
+    session: AsyncSession,
+) -> None:
+    order = await get_order(session, callback_data.order_id)
+    if (
+        order is None
+        or order.delivery_method != SELF_PICKUP_METHOD
+        or order.status == OrderStatus.REJECTED
+    ):
+        await answer_stale(callback, session, order)
+        return
+    current = f"сейчас: {html.quote(order.pickup_point)}" if order.pickup_point else "сейчас не указан"
+    await start_text_input(
+        callback,
+        state,
+        order,
+        AdminForm.waiting_pickup_address,
+        f"Напишите адрес самовывоза для заказа №{order.id} ({current}).\n"
+        "Он появится в карточке заказа и у клиента в «📦 Мои заказы».",
+    )
+
+
 @router.callback_query(AdminOrderCallback.filter(F.action == "paid"))
 async def mark_paid(
     callback: CallbackQuery,
@@ -378,7 +408,10 @@ async def mark_ready(
     log_event(order, f"готов к выдаче — мастер {master_name(callback.from_user)}")
     await refresh_admin_cards(bot, session, order, pressed_card(callback))
     text = f"Заказ №{order.id} готов к выдаче ✅"
-    if PICKUP_ADDRESS:
+    # Адрес, который мастер вписал в заказ, важнее общего «договорного».
+    if order.delivery_method == SELF_PICKUP_METHOD and order.pickup_point:
+        text += f"\nАдрес самовывоза: {html.quote(order.pickup_point)}."
+    elif PICKUP_ADDRESS:
         text += f"\nАдрес самовывоза: {html.quote(PICKUP_ADDRESS)}."
     if order.payment_method == CASH:
         text += f"\nОплата при получении: {html.bold(f'{order.amount} BYN')} наличными."
@@ -561,9 +594,35 @@ async def reject_reason(
     )
 
 
+@router.message(AdminForm.waiting_pickup_address, F.text, ~F.text.startswith("/"))
+async def pickup_address(
+    message: Message, state: FSMContext, session: AsyncSession, bot: Bot
+) -> None:
+    address = " ".join(message.text.split())
+    if len(address) < MIN_PICKUP_ADDRESS_LENGTH:
+        await message.answer("Слишком коротко — напишите адрес полностью. Отмена — /cancel.")
+        return
+    if len(address) > MAX_PICKUP_ADDRESS_LENGTH:
+        await message.answer(f"Слишком длинно — сократите до {MAX_PICKUP_ADDRESS_LENGTH} символов.")
+        return
+
+    data = await state.get_data()
+    await state.clear()
+    order = await set_pickup_address(session, data["order_id"], address)
+    if order is None:
+        await message.answer("Заказ отклонён или клиент сменил доставку — адрес не сохранён.")
+        return
+    log_event(order, f"адрес самовывоза: {address} — мастер {master_name(message.from_user)}")
+    await refresh_admin_cards(
+        bot, session, order, (data["card_chat_id"], data["card_message_id"])
+    )
+    await message.answer(f"Адрес самовывоза по заказу №{order.id} сохранён.")
+
+
 @router.message(AdminForm.waiting_amount, ~F.text.startswith("/"))
 @router.message(AdminForm.waiting_weight, ~F.text.startswith("/"))
 @router.message(AdminForm.waiting_reject_reason)
+@router.message(AdminForm.waiting_pickup_address, ~F.text.startswith("/"))
 async def admin_text_expected(message: Message) -> None:
     await message.answer("Нужен текст сообщением. Отмена — /cancel.")
 

@@ -44,7 +44,8 @@ class Order(Base):
     # Для разработки: описание модели и референсы ([{"file_id": ..., "kind": "photo"|"document"}]).
     description: Mapped[str | None] = mapped_column(Text)
     attachments: Mapped[list[dict[str, Any]] | None] = mapped_column(JSON)
-    # Способ доставки (из DELIVERY_METHODS) и адрес ПВЗ для Европочты; у старых заказов — NULL.
+    # Способ доставки (из DELIVERY_METHODS); у старых заказов — NULL. pickup_point — адрес:
+    # для Европочты ПВЗ от клиента, для самовывоза — адрес, который вписал мастер.
     delivery_method: Mapped[str | None] = mapped_column(String(16))
     pickup_point: Mapped[str | None] = mapped_column(String(255))
     # Способ оплаты: card | iban | cash (ключи PAYMENT_METHOD_TITLES); у старых заказов — NULL.
