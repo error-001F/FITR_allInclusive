@@ -48,3 +48,7 @@ def _add_missing_columns(conn: Connection) -> None:
         conn.execute(text("ALTER TABLE orders ADD COLUMN pickup_point VARCHAR(255)"))
     if "payment_method" not in columns:
         conn.execute(text("ALTER TABLE orders ADD COLUMN payment_method VARCHAR(8)"))
+    if "promo_code" not in columns:
+        conn.execute(text("ALTER TABLE orders ADD COLUMN promo_code VARCHAR(32)"))
+    if "promo_kind" not in columns:
+        conn.execute(text("ALTER TABLE orders ADD COLUMN promo_kind VARCHAR(8)"))

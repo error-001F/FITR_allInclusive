@@ -19,7 +19,11 @@ from bot.catalog import (
     MAX_WEIGHT_GRAMS,
     PICKUP_ADDRESS,
     PRINT_EXTENSIONS,
+    PROMO_FREE,
+    PROMO_HALF,
+    PROMO_TITLES,
     SELF_PICKUP_METHOD,
+    apply_promo,
     PriceCalc,
     calculate_print_price,
 )
@@ -50,6 +54,7 @@ from bot.services.notifications import (
     send_admin_card,
 )
 from bot.services.payment import payment_message
+from bot.services.promo import release_promo
 from bot.services.orders import (
     count_orders,
     delete_order,
@@ -108,15 +113,20 @@ CLIENT_UNREACHABLE = (
 )
 
 
-def parse_amount(text: str) -> Decimal | None:
-    """«12.5», «12,50», «12 BYN» → Decimal('12.50'); некорректный ввод → None."""
+def parse_amount(text: str, allow_zero: bool = False) -> Decimal | None:
+    """«12.5», «12,50», «12 BYN» → Decimal('12.50'); некорректный ввод → None.
+
+    allow_zero — для заказа с сертификатом на бесплатную печать сумма может быть 0.
+    """
     cleaned = text.lower().replace("byn", "").replace(",", ".").replace(" ", "")
     try:
         amount = Decimal(cleaned)
     except InvalidOperation:
         return None
     # is_finite отсекает NaN и Infinity, которые Decimal тоже умеет разбирать.
-    if not amount.is_finite() or amount <= 0 or amount > MAX_AMOUNT:
+    if not amount.is_finite() or amount < 0 or amount > MAX_AMOUNT:
+        return None
+    if amount == 0 and not allow_zero:
         return None
     return amount.quantize(Decimal("0.01"))
 
@@ -141,7 +151,8 @@ def has_print_params(order: Order) -> bool:
     return order.layer_height in LAYER_PRICES and order.infill in INFILL_SURCHARGES
 
 
-def price_calc_text(order: Order, calc: PriceCalc) -> str:
+def price_calc_text(order: Order, calc: PriceCalc, total: Decimal) -> str:
+    """total — итог к оплате (с учётом промокода)."""
     lines = [
         html.bold(f"Расчёт по заказу №{order.id}:"),
         f"{format_weight(calc.weight)} г × {calc.price_per_gram} BYN/г "
@@ -152,9 +163,30 @@ def price_calc_text(order: Order, calc: PriceCalc) -> str:
         lines.append(html.bold(f"Итого: {calc.total} BYN"))
     else:
         lines.append(html.bold(f"Итого: {calc.exact} → {calc.total} BYN") + " (округление до 10 коп. вверх)")
+    if order.promo_kind and total != calc.total:
+        lines.append(
+            html.bold(f"Промокод {PROMO_TITLES.get(order.promo_kind, order.promo_kind)}: "
+                      f"{calc.total} → {total} BYN")
+        )
     if order.order_type == OrderType.DESIGN:
         lines.append("\nЭто только печать — стоимость разработки добавьте через «✏️ Своя сумма».")
     return "\n".join(lines)
+
+
+def promo_hint(order: Order, manual: bool) -> str:
+    """Строка-напоминание мастеру о промокоде при вводе веса или суммы."""
+    if order.promo_kind == PROMO_HALF:
+        if manual:
+            return "\n\n🎟 Промокод: скидка 50%. Введите ПОЛНУЮ сумму — бот сам разделит её пополам."
+        return "\n\n🎟 Промокод: скидка 50% — бот учтёт её в расчёте."
+    if order.promo_kind == PROMO_FREE:
+        if manual:
+            return (
+                f"\n\nСертификат {PROMO_TITLES[PROMO_FREE]} — учтите это в сумме сами "
+                "(можно ввести 0)."
+            )
+        return f"\n\nСертификат {PROMO_TITLES[PROMO_FREE]} — бот учтёт это в расчёте."
+    return ""
 
 
 def master_name(user: User) -> str:
@@ -213,7 +245,7 @@ async def invoice_start(
             order,
             AdminForm.waiting_weight,
             f"Введите вес модели из слайсера по заказу №{order.id}, г (например, 124) — "
-            "бот рассчитает сумму.",
+            f"бот рассчитает сумму.{promo_hint(order, manual=False)}",
         )
     else:
         await start_text_input(
@@ -221,7 +253,8 @@ async def invoice_start(
             state,
             order,
             AdminForm.waiting_amount,
-            f"Введите итоговую сумму по заказу №{order.id} в BYN (например, 12.50).",
+            f"Введите итоговую сумму по заказу №{order.id} в BYN (например, 12.50)."
+            f"{promo_hint(order, manual=True)}",
         )
 
 
@@ -250,7 +283,10 @@ async def invoice_ok(
     AdminOrderCallback.filter(F.action.in_({"invoice_manual", "invoice_weight"})),
 )
 async def invoice_change(
-    callback: CallbackQuery, callback_data: AdminOrderCallback, state: FSMContext
+    callback: CallbackQuery,
+    callback_data: AdminOrderCallback,
+    state: FSMContext,
+    session: AsyncSession,
 ) -> None:
     data = await state.get_data()
     if data.get("order_id") != callback_data.order_id:
@@ -259,7 +295,9 @@ async def invoice_change(
     await callback.message.edit_reply_markup(reply_markup=None)
     if callback_data.action == "invoice_manual":
         await state.set_state(AdminForm.waiting_amount)
-        prompt = f"Введите свою сумму по заказу №{callback_data.order_id} в BYN (например, 45)."
+        order = await get_order(session, callback_data.order_id)
+        hint = promo_hint(order, manual=True) if order else ""
+        prompt = f"Введите свою сумму по заказу №{callback_data.order_id} в BYN (например, 45).{hint}"
     else:
         await state.set_state(AdminForm.waiting_weight)
         prompt = f"Введите другой вес по заказу №{callback_data.order_id}, г."
@@ -413,7 +451,7 @@ async def mark_ready(
         text += f"\nАдрес самовывоза: {html.quote(order.pickup_point)}."
     elif PICKUP_ADDRESS:
         text += f"\nАдрес самовывоза: {html.quote(PICKUP_ADDRESS)}."
-    if order.payment_method == CASH:
+    if order.payment_method == CASH and order.amount:
         text += f"\nОплата при получении: {html.bold(f'{order.amount} BYN')} наличными."
     text += "\nО способе получения договоритесь с мастером."
     delivered = await notify_client(bot, order, text)
@@ -451,9 +489,10 @@ async def invoice_weight(message: Message, state: FSMContext, session: AsyncSess
         return
 
     calc = calculate_print_price(weight, order.layer_height, order.infill)
-    await state.update_data(weight=str(weight), calc_total=str(calc.total))
+    total = apply_promo(order.promo_kind, calc.total, calc)
+    await state.update_data(weight=str(weight), calc_total=str(total), full_total=str(calc.total))
     await state.set_state(AdminForm.confirming_amount)
-    await message.answer(price_calc_text(order, calc), reply_markup=price_calc_kb(order, calc.total))
+    await message.answer(price_calc_text(order, calc, total), reply_markup=price_calc_kb(order, total))
 
 
 @router.message(AdminForm.waiting_amount, F.text, ~F.text.startswith("/"))
@@ -464,13 +503,20 @@ async def invoice_amount(
     bot: Bot,
     settings: Settings,
 ) -> None:
-    amount = parse_amount(message.text)
+    data = await state.get_data()
+    order = await get_order(session, data["order_id"])
+    promo = order.promo_kind if order else None
+    amount = parse_amount(message.text, allow_zero=promo == PROMO_FREE)
     if amount is None:
         await message.answer(
             f"Не понял сумму. Введите число больше 0 и не больше {MAX_AMOUNT}, "
             "например 12.50. Отмена — /cancel."
         )
         return
+    # Скидку 50% бот применяет к полной сумме сам; бесплатную печать мастер учёл в сумме.
+    await state.update_data(full_total=str(amount))
+    if promo == PROMO_HALF:
+        amount = apply_promo(promo, amount)
     await send_invoice(message, state, session, bot, settings, message.from_user, amount)
 
 
@@ -493,10 +539,12 @@ async def send_invoice(
     weight = Decimal(data["weight"]) if data.get("weight") else None
     current = await get_order(session, data["order_id"])
     cash = current is not None and current.payment_method == CASH
+    # Бесплатно по сертификату — платить нечего: как с наличными, сразу в печать.
+    free = amount == 0
     order = await update_order_status(
         session,
         data["order_id"],
-        OrderStatus.PRINTING if cash else OrderStatus.AWAITING_PAYMENT,
+        OrderStatus.PRINTING if cash or free else OrderStatus.AWAITING_PAYMENT,
         INVOICE_FROM,
         amount=amount,
         # Вес храним, если мастер его вводил (даже если сумму поставил свою).
@@ -510,7 +558,7 @@ async def send_invoice(
     calc = None
     if weight is not None and has_print_params(order):
         calc = calculate_print_price(weight, order.layer_height, order.infill)
-        if calc.total != amount:
+        if apply_promo(order.promo_kind, calc.total, calc) != amount:
             calc = None
     if calc:
         how = (
@@ -519,7 +567,16 @@ async def send_invoice(
         )
     else:
         how = "сумма мастера"
-    paid_how = "оплата наличными при получении, сразу в печать" if cash else "ждёт оплаты"
+    full = Decimal(data["full_total"]) if data.get("full_total") else amount
+    promo_title = PROMO_TITLES.get(order.promo_kind or "", "")
+    if order.promo_kind and full != amount:
+        how += f"; промокод {order.promo_code}: {full} → {amount} BYN"
+    if free:
+        paid_how = "бесплатно по сертификату, сразу в печать"
+    elif cash:
+        paid_how = "оплата наличными при получении, сразу в печать"
+    else:
+        paid_how = "ждёт оплаты"
     log_event(
         order,
         f"счёт выставлен: {order.amount} BYN ({how}), {paid_how} — мастер {master_name(master)}",
@@ -530,7 +587,16 @@ async def send_invoice(
         calc_line = f"\nРасчёт: {format_weight(weight)} г × {calc.price_per_gram} BYN/г"
         if calc.surcharge:
             calc_line += f" + {calc.surcharge} BYN за заполнение"
-    if cash:
+    if order.promo_kind and full != amount:
+        calc_line += f"\nПромокод: {promo_title} (без скидки {full} BYN)"
+    if free:
+        delivered = await notify_client(
+            bot,
+            order,
+            f"Мастер проверил заказ №{order.id}: по сертификату он {html.bold('бесплатный')} "
+            f"({promo_title}).{calc_line}\n\nЗаказ передан в печать 🖨",
+        )
+    elif cash:
         delivered = await notify_client(
             bot,
             order,
@@ -551,6 +617,8 @@ async def send_invoice(
     )
     if not delivered:
         await message.answer(CLIENT_UNREACHABLE)
+    elif free:
+        await message.answer(f"Заказ №{order.id} бесплатный по сертификату и передан в печать.")
     elif cash:
         await message.answer(
             f"Заказ №{order.id} подтверждён на {order.amount} BYN: оплата наличными "
@@ -578,12 +646,18 @@ async def reject_reason(
         await message.answer("Статус заказа уже изменился — заказ не отклонён.")
         return
     log_event(order, f"отклонён: {reason} — мастер {master_name(message.from_user)}")
+    promo_note = ""
+    if order.promo_code:
+        # Клиент сертификатом не воспользовался — код снова действует.
+        await release_promo(session, order.promo_code)
+        log_event(order, f"промокод {order.promo_code} снова действует (заказ отклонён)")
+        promo_note = "\nПромокод с сертификата снова действует — его можно ввести в новом заказе."
 
     delivered = await notify_client(
         bot,
         order,
         f"К сожалению, заказ №{order.id} отклонён мастером.\n"
-        f"Причина: {html.quote(reason)}\n\n"
+        f"Причина: {html.quote(reason)}\n{promo_note}\n"
         f"Если есть вопросы — нажмите «{CONTACT_MASTER_BUTTON}».",
     )
     await refresh_admin_cards(

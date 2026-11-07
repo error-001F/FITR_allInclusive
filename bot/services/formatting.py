@@ -4,7 +4,13 @@ from decimal import Decimal
 
 from aiogram import html
 
-from bot.catalog import LOCAL_TIMEZONE, ORDER_STATUS_TITLES, PAYMENT_METHOD_TITLES, delivery_text
+from bot.catalog import (
+    LOCAL_TIMEZONE,
+    ORDER_STATUS_TITLES,
+    PAYMENT_METHOD_TITLES,
+    PROMO_TITLES,
+    delivery_text,
+)
 from bot.database.models import Order
 from bot.keyboards.orders import ORDER_TYPE_TITLES
 
@@ -65,6 +71,8 @@ def order_details_lines(order: Order, description_limit: int | None = None) -> l
     if order.payment_method:
         method = PAYMENT_METHOD_TITLES.get(order.payment_method, order.payment_method)
         lines.append(f"Оплата: {method}")
+    if order.promo_kind:
+        lines.append(f"Промокод: {PROMO_TITLES.get(order.promo_kind, order.promo_kind)}")
     return lines
 
 
@@ -100,4 +108,7 @@ def admin_card_text(order: Order) -> str:
         "",
         *order_details_lines(order),
     ]
+    if order.promo_code:
+        # Сам код видит только мастер — чтобы сверить с сертификатом.
+        lines.append(f"Код сертификата: <code>{html.quote(order.promo_code)}</code>")
     return "\n".join(lines)

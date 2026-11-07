@@ -54,6 +54,8 @@ async def create_order(
     delivery_method: str | None = None,
     pickup_point: str | None = None,
     payment_method: str | None = None,
+    promo_code: str | None = None,
+    promo_kind: str | None = None,
 ) -> Order:
     order = Order(
         user_id=user_id,
@@ -72,6 +74,8 @@ async def create_order(
         delivery_method=delivery_method,
         pickup_point=pickup_point,
         payment_method=payment_method,
+        promo_code=promo_code,
+        promo_kind=promo_kind,
     )
     session.add(order)
     await session.commit()

@@ -63,6 +63,8 @@ def describe_order(order: Order) -> str:
         parts.append(delivery)
     if order.payment_method:
         parts.append(f"оплата {order.payment_method}")
+    if order.promo_code:
+        parts.append(f"промокод {order.promo_code} ({order.promo_kind})")
     return "; ".join(parts) or "без деталей"
 
 

@@ -38,4 +38,5 @@ aiogram 3, SQLAlchemy 2 (async) + SQLite, Python ≥ 3.11 (локально 3.14
 Офлайн-симуляция без `.env`: тестовый стенд в scratchpad (`harness.py`: фейковая `BaseSession`,
 `create_dispatcher` из `bot/__main__.py`, временная SQLite, `Settings(_env_file=None, ...)`),
 сценарии через `dp.feed_update`. После изменений — регрессия соседних сценариев, затем проверка
-пользователем в Telegram. README.md описывает настройки и функции — обновлять вместе с кодом.
+пользователем в Telegram. README.md описывает настройки и функции, ARCHITECTURE.md — устройство
+кода для пользователя (сценарии, рецепты изменений) — обновлять оба вместе с кодом.

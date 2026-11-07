@@ -20,6 +20,9 @@ from bot.catalog import (
     PAYMENT_METHOD_TITLES,
     PICKUP_POINT_METHOD,
     PRINT_EXTENSIONS,
+    PROMO_FREE,
+    PROMO_TITLES,
+    FREE_PROMO_GRAMS,
     delivery_title,
 )
 from bot.config import Settings
@@ -33,6 +36,9 @@ from bot.keyboards.orders import (
     DONE_BUTTON,
     EDIT_CONTACTS_CALLBACK,
     ORDER_TYPE_TITLES,
+    PROMO_BACK_CALLBACK,
+    PROMO_CALLBACK,
+    PROMO_REMOVE_CALLBACK,
     SKIP_BUTTON,
     DeliveryCallback,
     PaymentMethodCallback,
@@ -46,12 +52,19 @@ from bot.keyboards.orders import (
     layer_kb,
     material_kb,
     payment_method_kb,
+    promo_input_kb,
     references_kb,
 )
 from bot.services.history import describe_order, log_event
 from bot.services.model_files import check_model_file
 from bot.services.notifications import notify_admins_new_order
 from bot.services.orders import create_order, get_last_contacts
+from bot.services.promo import (
+    attempts_left,
+    find_available_promo,
+    register_failed_attempt,
+    reserve_promo,
+)
 from bot.states import OrderForm
 
 router = Router(name="orders")
@@ -117,11 +130,20 @@ def format_order(data: dict[str, Any]) -> str:
     lines.append(f"Оплата: {PAYMENT_METHOD_TITLES[data['payment_method']]}")
     lines.append(f"ФИО: {html.quote(data['customer_name'])}")
     lines.append(f"Телефон: {html.quote(data['phone'])}")
+    if data.get("promo_kind"):
+        lines.append(f"Промокод: {PROMO_TITLES[data['promo_kind']]}")
     if order_type == OrderType.PRINT:
         lines.append(
             "\nИтог = вес × цена за грамм + наценка за заполнение. "
             "Точный вес рассчитаю в слайсере."
         )
+    if data.get("promo_kind") == PROMO_FREE:
+        lines.append(
+            f"По сертификату печать до {FREE_PROMO_GRAMS} г бесплатна; если модель тяжелее — "
+            "оплачиваются лишние граммы и наценка за заполнение."
+        )
+    elif data.get("promo_kind"):
+        lines.append("Скидка по промокоду применится к счёту мастера.")
     return "\n".join(lines)
 
 
@@ -159,7 +181,8 @@ async def show_summary(message: Message, state: FSMContext) -> None:
     await state.set_state(OrderForm.confirming)
     data = await state.get_data()
     await message.answer(
-        f"Проверьте заказ:\n\n{format_order(data)}", reply_markup=confirm_kb()
+        f"Проверьте заказ:\n\n{format_order(data)}",
+        reply_markup=confirm_kb(has_promo=bool(data.get("promo_code"))),
     )
 
 
@@ -548,6 +571,68 @@ async def edit_contacts(callback: CallbackQuery, state: FSMContext) -> None:
     await callback.answer()
 
 
+# --- Промокод с сертификата (кнопка на сводке перед подтверждением) ---
+
+TOO_MANY_ATTEMPTS = (
+    "Слишком много неверных промокодов. Попробуйте через час или напишите мастеру "
+    "через «💬 Связаться с мастером»."
+)
+
+
+@router.callback_query(OrderForm.confirming, F.data == PROMO_CALLBACK)
+async def promo_start(callback: CallbackQuery, state: FSMContext) -> None:
+    if not attempts_left(callback.from_user.id):
+        await callback.answer(TOO_MANY_ATTEMPTS, show_alert=True)
+        return
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await state.set_state(OrderForm.waiting_promo)
+    await callback.message.answer(
+        "Введите промокод с сертификата.", reply_markup=promo_input_kb()
+    )
+    await callback.answer()
+
+
+@router.message(OrderForm.waiting_promo, F.text)
+async def receive_promo(message: Message, state: FSMContext, session: AsyncSession) -> None:
+    user_id = message.from_user.id
+    if not attempts_left(user_id):
+        await message.answer(TOO_MANY_ATTEMPTS, reply_markup=promo_input_kb())
+        return
+    found = await find_available_promo(session, message.text)
+    if found is None:
+        register_failed_attempt(user_id)
+        await message.answer(
+            "Промокод не найден или уже использован. Проверьте код на сертификате и "
+            "введите ещё раз.",
+            reply_markup=promo_input_kb(),
+        )
+        return
+    code, kind = found
+    await state.update_data(promo_code=code, promo_kind=kind)
+    await message.answer(f"✅ Промокод принят: {PROMO_TITLES[kind]}.")
+    await show_summary(message, state)
+
+
+@router.message(OrderForm.waiting_promo)
+async def receive_promo_invalid(message: Message) -> None:
+    await message.answer("Напишите промокод текстом.", reply_markup=promo_input_kb())
+
+
+@router.callback_query(OrderForm.waiting_promo, F.data == PROMO_BACK_CALLBACK)
+async def promo_back(callback: CallbackQuery, state: FSMContext) -> None:
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await show_summary(callback.message, state)
+    await callback.answer()
+
+
+@router.callback_query(OrderForm.confirming, F.data == PROMO_REMOVE_CALLBACK)
+async def promo_remove(callback: CallbackQuery, state: FSMContext) -> None:
+    await state.update_data(promo_code=None, promo_kind=None)
+    await callback.message.edit_reply_markup(reply_markup=None)
+    await show_summary(callback.message, state)
+    await callback.answer("Промокод убран")
+
+
 @router.callback_query(OrderForm.confirming, F.data == CONFIRM_CALLBACK)
 async def confirm_order(
     callback: CallbackQuery,
@@ -557,6 +642,19 @@ async def confirm_order(
     settings: Settings,
 ) -> None:
     data = await state.get_data()
+    promo_code = data.get("promo_code")
+    # Код занимаем до создания заказа: если его только что использовали в другом заказе,
+    # заказ не создаём, а показываем сводку без промокода.
+    if promo_code and not await reserve_promo(session, promo_code, callback.from_user.id):
+        await state.update_data(promo_code=None, promo_kind=None)
+        await callback.message.edit_reply_markup(reply_markup=None)
+        await callback.message.answer(
+            "Этот промокод уже использован — заказ пока не оформлен. Промокод убран из заказа, "
+            "проверьте сводку."
+        )
+        await show_summary(callback.message, state)
+        await callback.answer()
+        return
     # Очищаем состояние до записи в БД, чтобы повторное нажатие не создало дубль.
     await state.clear()
 
@@ -581,6 +679,8 @@ async def confirm_order(
         delivery_method=data.get("delivery_method"),
         pickup_point=data.get("pickup_point"),
         payment_method=data.get("payment_method"),
+        promo_code=promo_code,
+        promo_kind=data.get("promo_kind") if promo_code else None,
     )
     log_event(order, f"создан клиентом: {describe_order(order)}")
 
@@ -600,6 +700,8 @@ async def confirm_order(
 @router.callback_query(PrintOptionCallback.filter())
 @router.callback_query(DeliveryCallback.filter())
 @router.callback_query(PaymentMethodCallback.filter())
-@router.callback_query(F.data.in_({CONFIRM_CALLBACK, EDIT_CONTACTS_CALLBACK}))
+@router.callback_query(
+    F.data.in_({CONFIRM_CALLBACK, EDIT_CONTACTS_CALLBACK, PROMO_CALLBACK, PROMO_REMOVE_CALLBACK, PROMO_BACK_CALLBACK})
+)
 async def stale_button(callback: CallbackQuery) -> None:
     await callback.answer("Эта кнопка уже неактуальна.")

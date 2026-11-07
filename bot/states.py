@@ -18,6 +18,7 @@ class OrderForm(StatesGroup):
     waiting_name = State()
     waiting_contact = State()
     confirming = State()
+    waiting_promo = State()  # промокод с сертификата (со сводки), потом снова confirming
 
 
 class AdminForm(StatesGroup):

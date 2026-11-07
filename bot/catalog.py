@@ -97,6 +97,73 @@ def calculate_print_price(weight: Decimal, layer_height: str, infill: int) -> Pr
     total = exact.quantize(PRICE_ROUNDING, rounding=ROUND_CEILING).quantize(Decimal("0.01"))
     return PriceCalc(weight, price_per_gram, print_cost, surcharge, exact, total)
 
+
+def round_price(amount: Decimal) -> Decimal:
+    """Округление итога вверх до 10 копеек (как в calculate_print_price)."""
+    return amount.quantize(PRICE_ROUNDING, rounding=ROUND_CEILING).quantize(Decimal("0.01"))
+
+
+# --- Промокоды с подарочных сертификатов ---
+#
+# Впишите коды в нужный список — каждый в кавычках, через запятую, по одному в строке.
+# Каждый код работает ОДИН раз: использованные бот хранит в БД (таблица promo_uses),
+# удалять код отсюда после использования не нужно. Если мастер отклонит
+# заказ, код снова начнёт действовать.
+# Регистр, пробелы и дефисы при вводе не важны: клиент может ввести «fitr 7k2q 9xmd».
+# Делайте коды длинными и случайными (например, FITR-7K2Q-9XMD), чтобы их нельзя было угадать.
+# Длина кода без пробелов и дефисов — не больше 32 символов.
+
+# «Печать до 200 г бесплатно»: свыше лимита клиент платит за лишние граммы + наценку за заполнение.
+FREE_PROMO_CODES: list[str] = [
+    # "FITR-FREE-0001",
+]
+# «Скидка 50%» на всю сумму счёта.
+HALF_PROMO_CODES: list[str] = [
+    # "FITR-HALF-0001",
+]
+
+PROMO_FREE = "free"
+PROMO_HALF = "half"
+FREE_PROMO_GRAMS = Decimal("200")
+HALF_PROMO_DISCOUNT = Decimal("0.5")  # доля, которую платит клиент
+PROMO_TITLES = {
+    PROMO_FREE: f"🎟 печать до {FREE_PROMO_GRAMS} г бесплатно",
+    PROMO_HALF: "🎟 скидка 50%",
+}
+# Защита от подбора: столько неверных кодов за час, потом ввод временно блокируется.
+PROMO_MAX_ATTEMPTS = 100
+PROMO_ATTEMPTS_WINDOW = timedelta(hours=1)
+
+
+def normalize_promo(text: str) -> str:
+    return "".join(ch for ch in text.upper() if ch not in " -\t\n")
+
+
+def promo_kind(code: str) -> str | None:
+    """Вид промокода (PROMO_FREE / PROMO_HALF) по нормализованному коду; None — такого нет."""
+    if code in {normalize_promo(c) for c in FREE_PROMO_CODES}:
+        return PROMO_FREE
+    if code in {normalize_promo(c) for c in HALF_PROMO_CODES}:
+        return PROMO_HALF
+    return None
+
+
+def apply_promo(kind: str | None, amount: Decimal, calc: PriceCalc | None = None) -> Decimal:
+    """Сумма к оплате с учётом промокода.
+
+    half — половина суммы. free — по расчёту веса: до FREE_PROMO_GRAMS бесплатно, свыше —
+    лишние граммы по цене за грамм + наценка за заполнение. free без расчёта (разработка,
+    своя сумма мастера) — сумму не меняем: мастер учитывает сертификат сам.
+    """
+    if kind == PROMO_HALF:
+        return round_price(amount * HALF_PROMO_DISCOUNT)
+    if kind == PROMO_FREE and calc is not None:
+        if calc.weight <= FREE_PROMO_GRAMS:
+            return Decimal("0.00")
+        extra = ((calc.weight - FREE_PROMO_GRAMS) * calc.price_per_gram).quantize(Decimal("0.01"))
+        return round_price(extra + calc.surcharge)
+    return amount
+
 DELIVERY_METHODS = ["самовывоз", "европочта"]
 # Способ доставки, для которого клиент указывает адрес пункта выдачи.
 PICKUP_POINT_METHOD = "европочта"

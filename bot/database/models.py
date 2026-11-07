@@ -62,6 +62,9 @@ class Order(Base):
     )
     # Когда мастер отклонил заказ (UTC). По нему удаляем старые отклонённые заказы.
     rejected_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # Промокод с сертификата (нормализованный) и его вид: free | half (PROMO_TITLES в catalog.py).
+    promo_code: Mapped[str | None] = mapped_column(String(32))
+    promo_kind: Mapped[str | None] = mapped_column(String(8))
 
 
 class AdminCard(Base):
@@ -73,6 +76,18 @@ class AdminCard(Base):
     order_id: Mapped[int] = mapped_column(index=True)
     chat_id: Mapped[int] = mapped_column(BigInteger)
     message_id: Mapped[int]
+
+
+class PromoUse(Base):
+    """Израсходованный промокод. Таблица НЕ связана с заказом и не чистится при его удалении:
+    после выдачи (заказ удаляется) код остаётся использованным. Строку удаляют, только если
+    заказ с этим кодом отклонён — тогда код снова действует."""
+
+    __tablename__ = "promo_uses"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger)
+    used_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
 
 
 class ChatMessage(Base):

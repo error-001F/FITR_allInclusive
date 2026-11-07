@@ -15,6 +15,7 @@ from bot.handlers import get_routers
 from bot.middlewares.db import DbSessionMiddleware
 from bot.services.history import setup_history
 from bot.services.maintenance import cleanup_rejected
+from bot.services.promo import check_promo_codes
 
 
 logger = logging.getLogger(__name__)
@@ -64,6 +65,7 @@ async def main() -> None:
 
     engine = create_engine(settings.database_path)
     await init_db(engine)
+    check_promo_codes()
 
     bot = Bot(
         token=settings.bot_token.get_secret_value(),

@@ -24,6 +24,9 @@ SKIP_BUTTON = "Пропустить"
 CONFIRM_CALLBACK = "order_confirm"
 CANCEL_CALLBACK = "order_cancel"
 EDIT_CONTACTS_CALLBACK = "order_edit_contacts"
+PROMO_CALLBACK = "order_promo"
+PROMO_REMOVE_CALLBACK = "order_promo_remove"
+PROMO_BACK_CALLBACK = "order_promo_back"
 
 ORDER_TYPE_TITLES = {
     OrderType.PRINT: "Печать по моей 3D-модели",
@@ -177,7 +180,11 @@ def contact_kb() -> ReplyKeyboardMarkup:
     )
 
 
-def confirm_kb() -> InlineKeyboardMarkup:
+def confirm_kb(has_promo: bool = False) -> InlineKeyboardMarkup:
+    if has_promo:
+        promo = InlineKeyboardButton(text="🎟 Убрать промокод", callback_data=PROMO_REMOVE_CALLBACK)
+    else:
+        promo = InlineKeyboardButton(text="🎟 Ввести промокод", callback_data=PROMO_CALLBACK)
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -189,5 +196,14 @@ def confirm_kb() -> InlineKeyboardMarkup:
                     text="Изменить ФИО и телефон", callback_data=EDIT_CONTACTS_CALLBACK
                 )
             ],
+            [promo],
+        ]
+    )
+
+
+def promo_input_kb() -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text="↩️ Без промокода", callback_data=PROMO_BACK_CALLBACK)]
         ]
     )
