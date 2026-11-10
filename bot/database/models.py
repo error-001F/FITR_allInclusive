@@ -1,9 +1,9 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from enum import StrEnum
 from typing import Any
 
-from sqlalchemy import JSON, BigInteger, DateTime, Numeric, String, Text, func
+from sqlalchemy import JSON, BigInteger, Date, DateTime, Numeric, String, Text, func
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column
 
 
@@ -107,3 +107,13 @@ class ChatMessage(Base):
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
+
+
+class StartEvent(Base):
+    """Пользователь нажал /start в этот день (дата по Минску). Одна строка на человека в день —
+    по ним /activity считает уникальных людей. Строки старше ACTIVITY_KEEP_DAYS удаляются."""
+
+    __tablename__ = "start_events"
+
+    day: Mapped[date] = mapped_column(Date, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)

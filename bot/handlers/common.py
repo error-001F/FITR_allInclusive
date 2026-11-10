@@ -1,3 +1,5 @@
+import logging
+
 from aiogram import F, Router, html
 from aiogram.filters import Command, CommandStart
 from aiogram.fsm.context import FSMContext
@@ -5,6 +7,7 @@ from aiogram.types import LinkPreviewOptions, Message, ReplyKeyboardMarkup
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from bot.catalog import price_info_text
+from bot.config import Settings
 from bot.database.models import Order
 from bot.keyboards.menu import (
     CONTACT_MASTER_BUTTON,
@@ -17,8 +20,11 @@ from bot.keyboards.menu import (
     main_menu_kb,
 )
 from bot.keyboards.payment import my_orders_kb
+from bot.services.activity import record_start
 from bot.services.formatting import order_details_lines, order_header
 from bot.services.orders import list_user_orders
+
+logger = logging.getLogger(__name__)
 
 router = Router(name="common")
 
@@ -46,8 +52,18 @@ def welcome_text() -> str:
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext) -> None:
+async def cmd_start(
+    message: Message, state: FSMContext, session: AsyncSession, settings: Settings
+) -> None:
     await state.clear()
+    # Статистика для /activity. Запуски мастеров не считаем — это проверки, а не клиенты.
+    if message.from_user is not None and message.from_user.id not in settings.admin_ids:
+        try:
+            await record_start(session, message.from_user.id)
+        except Exception:
+            # Сбой статистики не должен мешать приветствию.
+            await session.rollback()
+            logger.exception("Не удалось записать запуск бота")
     await message.answer(
         welcome_text(),
         reply_markup=main_menu_kb(),

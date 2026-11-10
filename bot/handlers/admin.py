@@ -43,6 +43,7 @@ from bot.keyboards.admin import (
 from bot.keyboards.menu import CONTACT_MASTER_BUTTON, MY_ORDERS_BUTTON
 from bot.keyboards.orders import color_kb, infill_kb, layer_kb, material_kb
 from bot.keyboards.payment import pay_kb
+from bot.services.activity import activity_text
 from bot.services.chat import count_messages
 from bot.services.formatting import format_weight, order_list_line
 from bot.services.history import describe_order, log_event
@@ -1052,6 +1053,12 @@ async def open_order(
 
 
 # --- Команды ---
+
+
+@router.message(Command("activity"))
+async def cmd_activity(message: Message, session: AsyncSession) -> None:
+    """/activity — сколько уникальных людей нажимали /start за неделю, по дням."""
+    await message.answer(await activity_text(session))
 
 
 @router.message(Command("order"))
