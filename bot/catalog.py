@@ -68,10 +68,10 @@ INFILL_HINT = (
 INFILL_SURCHARGES = {
     10: Decimal("0"),
     20: Decimal("0"),
-    40: Decimal("2.47"),
-    60: Decimal("4.94"),
-    80: Decimal("7.41"),
-    100: Decimal("9.88"),
+    40: Decimal("2.00"),
+    60: Decimal("3.50"),
+    80: Decimal("5.00"),
+    100: Decimal("6.50"),
 }
 
 # Расчёт цены печати: вес из слайсера × цена за грамм (по слою) + наценка за заполнение.
