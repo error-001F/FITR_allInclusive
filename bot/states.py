@@ -55,3 +55,9 @@ class EditForm(StatesGroup):
     waiting_references = State()  # данные: + attachments, last_album_id
     waiting_name = State()
     waiting_contact = State()
+
+
+class BroadcastForm(StatesGroup):
+    # Мастер готовит рассылку /broadcast.
+    waiting_message = State()
+    confirming = State()  # данные: from_chat_id, message_id, media_group_id

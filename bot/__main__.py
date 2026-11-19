@@ -13,6 +13,7 @@ from bot.config import Settings, get_settings
 from bot.database.engine import create_engine, create_session_pool, init_db
 from bot.handlers import get_routers
 from bot.middlewares.db import DbSessionMiddleware
+from bot.middlewares.users import TrackUsersMiddleware
 from bot.services.history import setup_history
 from bot.services.maintenance import cleanup_rejected
 from bot.services.promo import check_promo_codes
@@ -44,12 +45,17 @@ async def cleanup_rejected_orders(
 def create_dispatcher(
     settings: Settings, session_pool: async_sessionmaker[AsyncSession]
 ) -> Dispatcher:
-    # settings попадают в хендлеры как аргумент `settings`.
+    # settings и session_pool попадают в хендлеры как одноимённые аргументы
+    # (session_pool нужен рассылке: она идёт в фоне, дольше одного апдейта).
     # events_isolation: апдейты одного пользователя обрабатываются по очереди, а не
     # параллельно. Иначе фото из альбома (приходят отдельными апдейтами одновременно)
     # перезаписывали бы друг друга в данных FSM.
-    dp = Dispatcher(settings=settings, events_isolation=SimpleEventIsolation())
+    dp = Dispatcher(
+        settings=settings, session_pool=session_pool, events_isolation=SimpleEventIsolation()
+    )
     dp.update.middleware(DbSessionMiddleware(session_pool))
+    # После DbSessionMiddleware: ему нужна уже открытая сессия.
+    dp.update.middleware(TrackUsersMiddleware())
     dp.include_routers(*get_routers())
     return dp
 

@@ -115,11 +115,24 @@ def round_price(amount: Decimal) -> Decimal:
 
 # «Печать до 200 г бесплатно»: свыше лимита клиент платит за лишние граммы + наценку за заполнение.
 FREE_PROMO_CODES: list[str] = [
-    # "FITR-FREE-0001",
+   "DHhdBmtq",
+   "ngeaAeMH",
+   "tQdfBfFD",
+   "NBrLGarN",
+   "RBzrgGRhN"
 ]
 # «Скидка 50%» на всю сумму счёта.
-HALF_PROMO_CODES: list[str] = [
-    # "FITR-HALF-0001",
+HALF_PROMO_CODES: list[str] = [  
+"RRggngfH",
+"hBAmfLAB",
+"LgqGAfer",
+"LfhLDftG",
+"dQhtMAGE",
+"HrhefHFe",
+"JHqbrbhR",
+"LMgGabdq",
+"TMDAqrAq",
+"EfqfFQRH"
 ]
 
 PROMO_FREE = "free"

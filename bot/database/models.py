@@ -109,6 +109,19 @@ class ChatMessage(Base):
     )
 
 
+class BotUser(Base):
+    """Кто хоть раз заходил в бота (писал или нажимал кнопки) — получатели рассылки /broadcast."""
+
+    __tablename__ = "bot_users"
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True)
+    first_seen: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    # Заблокировал бота (выяснилось при рассылке) — больше не шлём, пока снова не напишет.
+    blocked: Mapped[bool] = mapped_column(default=False)
+
+
 class StartEvent(Base):
     """Пользователь нажал /start в этот день (дата по Минску). Одна строка на человека в день —
     по ним /activity считает уникальных людей. Строки старше ACTIVITY_KEEP_DAYS удаляются."""

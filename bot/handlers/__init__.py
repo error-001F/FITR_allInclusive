@@ -1,6 +1,6 @@
 from aiogram import Router
 
-from bot.handlers import admin, chat, common, edit, orders, payment
+from bot.handlers import admin, broadcast, chat, common, edit, orders, payment
 
 
 def get_routers() -> list[Router]:
@@ -18,4 +18,5 @@ def get_routers() -> list[Router]:
         payment.router,
         chat.router,
         admin.router,
+        broadcast.router,
     ]

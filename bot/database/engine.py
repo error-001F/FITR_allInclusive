@@ -24,8 +24,26 @@ def create_session_pool(engine: AsyncEngine) -> async_sessionmaker[AsyncSession]
 
 async def init_db(engine: AsyncEngine) -> None:
     async with engine.begin() as conn:
+        had_users = await conn.run_sync(lambda sync: inspect(sync).has_table("bot_users"))
         await conn.run_sync(Base.metadata.create_all)
         await conn.run_sync(_add_missing_columns)
+        if not had_users:
+            await conn.run_sync(_fill_bot_users)
+
+
+def _fill_bot_users(conn: Connection) -> None:
+    """Таблица получателей рассылки появилась позже остальных: один раз переносим в неё всех,
+    о ком в базе уже есть следы (заказы, запуски /start, промокоды, переписка)."""
+    conn.execute(
+        text(
+            "INSERT OR IGNORE INTO bot_users (user_id, first_seen, blocked) "
+            "SELECT user_id, CURRENT_TIMESTAMP, 0 FROM ("
+            " SELECT user_id FROM orders"
+            " UNION SELECT user_id FROM start_events"
+            " UNION SELECT user_id FROM promo_uses"
+            " UNION SELECT author_id FROM chat_messages WHERE author_role = 'client')"
+        )
+    )
 
 
 def _add_missing_columns(conn: Connection) -> None:
